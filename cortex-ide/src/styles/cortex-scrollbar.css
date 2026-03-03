@@ -1,0 +1,25 @@
+/* =============================================================================
+   CORTEX SCROLLBAR - Figma-Aligned Scrollbar Design Tokens
+   =============================================================================
+   Figma spec:
+   - Width: 6px
+   - Track: #2E2F31 (dark track background)
+   - Thumb (rest): transparent (invisible until hovered)
+   - Thumb (hover): #8C8D8F (subtle gray highlight on hover)
+   - Border-radius: 4px (rounded pill)
+   
+   This file defines the canonical scrollbar tokens. Scrollbar application rules
+   live in base.css (global) and scrollbar.css (VS Code / Monaco overrides).
+   
+   Usage: @import "./cortex-scrollbar.css";
+   Then reference tokens via var(--cortex-scrollbar-*) in component styles.
+   ============================================================================= */
+
+:root {
+  --cortex-scrollbar-width: 6px;
+  --cortex-scrollbar-height: 6px;
+  --cortex-scrollbar-track: #2E2F31;
+  --cortex-scrollbar-thumb: transparent;
+  --cortex-scrollbar-thumb-hover: #8C8D8F;
+  --cortex-scrollbar-radius: 4px;
+}

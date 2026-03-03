@@ -1,0 +1,192 @@
+import { render } from "solid-js/web";
+import { Router, Route } from "@solidjs/router";
+import { lazy, Suspense } from "solid-js";
+import { initializeWindowStorage, getWindowLabel } from "@/utils/windowStorage";
+
+// CRITICAL: Use AppShell instead of App for instant first paint
+// AppShell is minimal (~1KB) and lazy-loads AppCore (with 68 providers) after render
+import AppShell from "./AppShell";
+import "@/styles/index.css";
+
+// ============================================================================
+// PERFORMANCE TRACKING: Startup Metrics
+// ============================================================================
+const STARTUP_METRICS = {
+  scriptStart: performance.now(),
+  windowStorageInit: 0,
+  renderStart: 0,
+  firstPaint: 0,
+};
+
+// Log startup progress with timestamps
+function logStartup(phase: string) {
+  if (!import.meta.env.DEV) return;
+  const elapsed = (performance.now() - STARTUP_METRICS.scriptStart).toFixed(1);
+  console.log(`[STARTUP] ${phase} @ ${elapsed}ms`);
+}
+
+logStartup("Script executing");
+
+// ============================================================================
+// STARTUP OPTIMIZATION: Window Storage Initialization
+// ============================================================================
+// Initialize window-specific storage synchronously (required for routing)
+// This is on the critical path and must complete before render
+logStartup("Window storage init start");
+initializeWindowStorage();
+STARTUP_METRICS.windowStorageInit = performance.now();
+logStartup("Window storage init done");
+
+// ============================================================================
+// STARTUP OPTIMIZATION: Resolve Initial Route Before Render
+// ============================================================================
+// Determine the correct route BEFORE the router initializes, avoiding the
+// Home page redirect render cycle (mount → spinner → navigate → re-render).
+// The SolidJS Router reads window.location.pathname at init time, so setting
+// it here means the correct page component mounts directly.
+
+{
+  const pathname = window.location.pathname;
+  if (pathname === "/" || pathname === "/index.html") {
+    const label = getWindowLabel();
+    const currentProject =
+      localStorage.getItem(`cortex_current_project_${label}`) ||
+      localStorage.getItem("cortex_current_project");
+
+    const targetRoute = currentProject ? "/session" : "/welcome";
+    window.history.replaceState(null, "", targetRoute + window.location.search);
+    logStartup(`Route resolved: ${pathname} → ${targetRoute}`);
+  }
+}
+
+// ============================================================================
+// DEFERRED PRELOADING: Non-critical resources loaded during idle time
+// ============================================================================
+// These resources are not needed for initial render but improve UX when accessed.
+// Loading during idle time prevents blocking the main thread during startup.
+
+// Monaco and Shiki are NOT preloaded here — they load on demand:
+// - Monaco loads when the user first opens/focuses an editor tab
+// - Shiki loads when a code block first appears in AI chat or file preview
+// This keeps the main bundle lean and avoids blocking startup.
+
+// ============================================================================
+// CODE SPLITTING: Lazy-loaded Pages
+// ============================================================================
+// Pages are lazy-loaded to reduce initial bundle size.
+// Each page chunk is loaded on-demand when the route is accessed.
+
+// Home page - fallback redirect (route is normally resolved before render)
+const Home = lazy(() => import("./pages/Home"));
+
+// Welcome page - full welcome screen with branding, recent projects, quick actions
+const Welcome = lazy(() => import("./pages/Welcome"));
+
+// Session page - only loaded when user navigates to a session
+// Uses dynamic import with explicit chunk name for better caching
+const Session = lazy(() => import("./pages/Session"));
+
+// Admin page - only loaded when navigating to admin routes
+const AdminSessions = lazy(() => import("./pages/admin/AdminSessions"));
+
+// Share page - only loaded when viewing a shared session
+const SharedSession = lazy(() => import("./pages/share/SharedSession"));
+
+// Layout component - Figma pixel-perfect design (replaces old Layout.tsx)
+const Layout = lazy(() => import("@/components/cortex/CortexDesktopLayout").then(m => ({ default: m.CortexDesktopLayout })));
+
+// ============================================================================
+// INITIAL RENDER OPTIMIZATION: Minimal Fallback
+// ============================================================================
+// Ultra-minimal fallback that renders immediately without external dependencies.
+// Uses inline styles to avoid CSS loading delays.
+// The spinner animation is inlined to avoid FOUC.
+const MinimalFallback = () => (
+  <div style={{ 
+    "min-height": "100vh", 
+    background: "#131217",
+    display: "flex",
+    "align-items": "center",
+    "justify-content": "center"
+  }}>
+    <div style={{ 
+      width: "24px", 
+      height: "24px", 
+      border: "2px solid rgba(255,255,255,0.1)",
+      "border-top-color": "#BFFF00",
+      "border-radius": "50%",
+      animation: "spin 0.8s linear infinite"
+    }} />
+    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+  </div>
+);
+
+// ============================================================================
+// APPLICATION RENDER
+// ============================================================================
+// The render is structured to:
+// 1. Mount App immediately (provides context providers)
+// 2. Show MinimalFallback while Layout and pages load
+// 3. Progressively render content as chunks arrive
+
+logStartup("Render start");
+STARTUP_METRICS.renderStart = performance.now();
+
+// Track first paint and cleanup
+requestAnimationFrame(() => {
+  STARTUP_METRICS.firstPaint = performance.now();
+  logStartup("First paint (RAF)");
+  
+  // Remove the initial HTML loader (from index.html)
+  const initialLoader = document.getElementById("initial-loader");
+  if (initialLoader) {
+    initialLoader.style.opacity = "0";
+    initialLoader.style.transition = "opacity 150ms ease-out";
+    setTimeout(() => initialLoader.remove(), 150);
+  }
+  
+  // Signal backend to start Phase B (deferred heavy initialization)
+  import("@tauri-apps/api/core").then(({ invoke }) => {
+    const startupTime = performance.now() - STARTUP_METRICS.scriptStart;
+    invoke("frontend_ready").catch(() => {
+      // Silent fail - not critical
+    });
+    logStartup(`frontend_ready invoked (${startupTime.toFixed(1)}ms)`);
+  }).catch(() => {
+    // Not in Tauri context (browser dev)
+  });
+  
+  // Log final startup summary
+  if (import.meta.env.DEV) {
+    setTimeout(() => {
+      const total = performance.now() - STARTUP_METRICS.scriptStart;
+      console.log(`[STARTUP SUMMARY]
+  Total time: ${total.toFixed(1)}ms
+  Window storage: ${(STARTUP_METRICS.windowStorageInit - STARTUP_METRICS.scriptStart).toFixed(1)}ms
+  Render phase: ${(STARTUP_METRICS.firstPaint - STARTUP_METRICS.renderStart).toFixed(1)}ms
+  `);
+    }, 100);
+  }
+});
+
+render(
+  () => (
+    <Router root={AppShell}>
+      {/* All routes use CortexDesktopLayout */}
+      <Route path="*all" component={(props) => (
+        <Suspense fallback={<MinimalFallback />}>
+          <Layout>{props.children}</Layout>
+        </Suspense>
+      )}>
+        <Route path="/" component={Home} />
+        <Route path="/index.html" component={Home} />
+        <Route path="/welcome" component={Welcome} />
+        <Route path="/session/:id?" component={Session} />
+        <Route path="/admin/sessions" component={AdminSessions} />
+        <Route path="/share/:token" component={SharedSession} />
+      </Route>
+    </Router>
+  ),
+  document.getElementById("root")!
+);
+

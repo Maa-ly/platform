@@ -1,0 +1,13 @@
+/* =============================================================================
+   Global Base Styles for Cortex IDE (TailwindCSS v4)
+   Imported after Tailwind CSS in index.css.
+   
+   Core design tokens and resets are defined in design-tokens.css and base.css.
+   This file provides supplementary global utilities.
+   ============================================================================= */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cortex Desktop</title>
+    
+    <!-- Fonts - Local (No external requests for faster startup) -->
+    <link rel="preload" href="/fonts/Figtree-Latin.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/fonts/Inter-Regular.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/fonts/Inter-Medium.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="/fonts/figtree.css">
+    <link rel="stylesheet" href="/fonts/dm-sans.css">
+    <link rel="stylesheet" href="/fonts/inter.css">
+    
+    <!-- Critical CSS - Inline for instant first paint (Figma-aligned) -->
+    <style>
+      :root {
+        --background: #141415;
+        --foreground: #FCFCFC;
+        --text-primary: #FCFCFC;
+        --text-secondary: #8C8D8F;
+        --text-muted: #808080;
+        --surface-base: #141415;
+        --surface-card: #1C1C1D;
+        --surface-panel: #1C1C1D;
+        --surface-hover: #252628;
+        --surface-active: #252628;
+        --accent: #B2FF22;
+        --accent-hover: #6C8A2C;
+        --border: #2E2F31;
+        --border-subtle: #2E2F31;
+      }
+      
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      
+      html, body { 
+        margin: 0;
+        padding: 0;
+        background: var(--background) !important;
+        color: var(--foreground) !important;
+        font-family: 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 13px;
+        line-height: 1.4;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        overflow: hidden;
+      }
+      
+      #root {
+        min-height: 100vh;
+        background: var(--background);
+        display: flex;
+        flex-direction: column;
+      }
+      
+      /* Skeleton loader styles */
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+      
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      
+      .animate-pulse {
+        animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+      
+      .animate-spin {
+        animation: spin 0.8s linear infinite;
+      }
+      
+      /* Initial loader - shown immediately before JS loads */
+      .initial-loader {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--background);
+        z-index: 9999;
+      }
+      
+      .initial-loader .spinner {
+        width: 32px;
+        height: 32px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      
+      /* Prevent FOUC */
+      html {
+        background-color: #141415;
+      }
+      
+      /* Scrollbar styling - Figma spec: 6px, #2E2F31 track, transparent thumb, #8C8D8F on hover */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      
+      ::-webkit-scrollbar-track {
+        background: #2E2F31;
+      }
+      
+      ::-webkit-scrollbar-thumb {
+        background: transparent;
+        border-radius: 3px;
+      }
+      
+      ::-webkit-scrollbar-thumb:hover {
+        background: #8C8D8F;
+      }
+      
+      ::-webkit-scrollbar-corner {
+        background: #2E2F31;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <!-- Initial loader - removed by JS when app loads -->
+      <div class="initial-loader" id="initial-loader">
+        <div class="spinner"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

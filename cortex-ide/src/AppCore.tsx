@@ -1,0 +1,793 @@
+/**
+ * AppCore.tsx - Heavy Application Core (Lazy Loaded)
+ * 
+ * This file contains the HEAVY part of the app:
+ * - OptimizedProviders (68 context providers)
+ * - All UI components and dialogs
+ * - Hooks that depend on contexts
+ * 
+ * It is LAZY-LOADED by AppShell.tsx to ensure fast first paint.
+ * The import chain:
+ *   index.tsx -> AppShell.tsx (instant) -> lazy(AppCore.tsx) (deferred)
+ */
+
+// Startup timing
+const CORE_LOAD_TIME = performance.now();
+if (import.meta.env.DEV) console.log(`[STARTUP] AppCore.tsx module loading @ ${CORE_LOAD_TIME.toFixed(1)}ms`);
+
+import { ParentProps, createSignal, onMount, onCleanup, createEffect, Show, lazy, Suspense, batch } from "solid-js";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { invoke } from "@tauri-apps/api/core";
+import { getWindowLabel } from "@/utils/windowStorage";
+import { listen } from "@tauri-apps/api/event";
+import { setProjectPath } from "@/utils/workspace";
+import type { FeedbackType } from "@/components/FeedbackDialog";
+import { DialogErrorBoundary } from "@/components/ErrorBoundary";
+
+// Core providers wrapper - handles all context with Suspense
+import { OptimizedProviders } from "@/context/OptimizedProviders";
+
+// Hooks - safe to import since OptimizedProviders ensures they're available
+import { useAuxiliaryWindowInfo } from "@/context/WindowsContext";
+import { useToast } from "@/context/ToastContext";
+import { useEditor } from "@/context/EditorContext";
+import { useExtensions } from "@/context/ExtensionsContext";
+import { useCommands } from "@/context/CommandContext";
+import { useLayout } from "@/context/LayoutContext";
+import { useSettings } from "@/context/SettingsContext";
+import { useNotifications } from "@/context/NotificationsContext";
+import { useOutput } from "@/context/OutputContext";
+import { useWorkspace } from "@/context/WorkspaceContext";
+import { useEditorCursor } from "@/context/editor/EditorCursorContext";
+import { useWindowEvents } from "@/hooks/useWindowEvents";
+import { useAutoSave } from "@/hooks/useAutoSave";
+import { initGlobalErrorHandler } from "@/lib/error-handler";
+
+if (import.meta.env.DEV) console.log(`[STARTUP] AppCore imports done @ ${performance.now().toFixed(1)}ms`);
+
+// ============================================================================
+// Lazy-loaded UI Components - Grouped by usage pattern
+// ============================================================================
+
+// ALWAYS VISIBLE - Load immediately in first Suspense
+const ToastManager = lazy(() => import("@/components/ToastManager").then(m => ({ default: m.ToastManager })));
+const NotificationCenter = lazy(() => import("@/components/NotificationCenter").then(m => ({ default: m.NotificationCenter })));
+
+// COMMAND PALETTE - Core UI, should load early
+const ViewQuickAccess = lazy(() => import("@/components/ViewQuickAccess").then(m => ({ default: m.ViewQuickAccess })));
+const PaletteCommandPalette = lazy(() => import("@/components/palette/CommandPalette").then(m => ({ default: m.PaletteCommandPalette })));
+const PaletteQuickOpen = lazy(() => import("@/components/palette/QuickOpen").then(m => ({ default: m.PaletteQuickOpen })));
+
+// DIALOGS - Only load when opened
+const FeedbackDialog = lazy(() => import("@/components/FeedbackDialog").then(m => ({ default: m.FeedbackDialog })));
+const SettingsDialog = lazy(() => import("@/components/SettingsDialog").then(m => ({ default: m.SettingsDialog })));
+const AutoUpdateDialog = lazy(() => import("@/components/AutoUpdate").then(m => ({ default: m.AutoUpdateDialog })));
+const CloneRepositoryDialog = lazy(() => import("@/components/git/CloneRepositoryDialog").then(m => ({ default: m.CloneRepositoryDialog })));
+const EmmetWrapDialog = lazy(() => import("@/components/EmmetWrapDialog").then(m => ({ default: m.EmmetWrapDialog })));
+
+// TERMINAL PANEL - Only when terminal is visible
+const TerminalPanel = lazy(() => import("@/components/TerminalPanel").then(m => ({ default: m.TerminalPanel })));
+
+// FILE PICKERS - Only when invoked
+const FileFinder = lazy(() => import("@/components/FileFinder").then(m => ({ default: m.FileFinder })));
+const BufferSearch = lazy(() => import("@/components/BufferSearch").then(m => ({ default: m.BufferSearch })));
+const GoToLineDialog = lazy(() => import("@/components/cortex/dialogs/GoToLineDialog").then(m => ({ default: m.GoToLineDialog })));
+const GoToSymbolDialog = lazy(() => import("@/components/cortex/dialogs/GoToSymbolDialog").then(m => ({ default: m.GoToSymbolDialog })));
+const ProjectSearch = lazy(() => import("@/components/ProjectSearch").then(m => ({ default: m.ProjectSearch })));
+const ProjectSymbols = lazy(() => import("@/components/ProjectSymbols").then(m => ({ default: m.ProjectSymbols })));
+const WorkspaceSymbolPicker = lazy(() => import("@/components/WorkspaceSymbolPicker").then(m => ({ default: m.WorkspaceSymbolPicker })));
+
+// TASKS - Only when tasks panel is used
+const TasksPanel = lazy(() => import("@/components/tasks").then(m => ({ default: m.TasksPanel })));
+const TaskConfigEditor = lazy(() => import("@/components/tasks").then(m => ({ default: m.TaskConfigEditor })));
+const TaskQuickPick = lazy(() => import("@/components/tasks").then(m => ({ default: m.TaskQuickPick })));
+const TasksJsonEditor = lazy(() => import("@/components/tasks").then(m => ({ default: m.TasksJsonEditor })));
+
+// REPL - Only when REPL is opened
+const REPLPanel = lazy(() => import("@/components/repl").then(m => ({ default: m.REPLPanel })));
+
+// DEV TOOLS - Only in dev mode
+const ComponentPreview = lazy(() => import("@/components/dev").then(m => ({ default: m.ComponentPreview })));
+const Inspector = lazy(() => import("@/components/dev").then(m => ({ default: m.Inspector })));
+const InspectorProvider = lazy(() => import("@/context/InspectorContext").then(m => ({ default: m.InspectorProvider })));
+
+// JOURNAL - Only when journal opened
+const JournalPanel = lazy(() => import("@/components/Journal").then(m => ({ default: m.JournalPanel })));
+
+// SNIPPETS - Only when snippets panel opened
+const SnippetsPanel = lazy(() => import("@/components/snippets").then(m => ({ default: m.SnippetsPanel })));
+const SnippetEditor = lazy(() => import("@/components/snippets").then(m => ({ default: m.SnippetEditor })));
+
+// AI COMPONENTS - Only when AI features used
+const PromptStore = lazy(() => import("@/components/ai").then(m => ({ default: m.PromptStore })));
+const PromptEditor = lazy(() => import("@/components/ai").then(m => ({ default: m.PromptEditor })));
+const QuickChat = lazy(() => import("@/components/ai").then(m => ({ default: m.QuickChat })));
+const SubAgentManager = lazy(() => import("@/components/ai/SubAgentManager").then(m => ({ default: m.SubAgentManager })));
+
+// EDITOR MODALS - Only when invoked
+const TabSwitcher = lazy(() => import("@/components/editor/TabSwitcher").then(m => ({ default: m.TabSwitcher })));
+const LanguageSelectorModal = lazy(() => import("@/components/editor/LanguageSelector").then(m => ({ default: m.LanguageSelectorModal })));
+const EncodingPickerModal = lazy(() => import("@/components/editor/EncodingPicker").then(m => ({ default: m.EncodingPickerModal })));
+
+// MISC UI
+const WhichKey = lazy(() => import("@/components/WhichKey").then(m => ({ default: m.WhichKey })));
+const BookmarksPanel = lazy(() => import("@/components/BookmarksPanel").then(m => ({ default: m.BookmarksPanel })));
+const ScreencastMode = lazy(() => import("@/components/ScreencastMode").then(m => ({ default: m.ScreencastMode })));
+const AuxiliaryWindow = lazy(() => import("@/components/AuxiliaryWindow").then(m => ({ default: m.AuxiliaryWindow })));
+
+// PROFILES
+const ProfileSwitcher = lazy(() => import("@/components/profiles").then(m => ({ default: m.ProfileSwitcher })));
+const ProfileManager = lazy(() => import("@/components/profiles").then(m => ({ default: m.ProfileManager })));
+const ProfileCommands = lazy(() => import("@/components/profiles").then(m => ({ default: m.ProfileCommands })));
+
+// EXTENSIONS
+const ExtensionProfilerCommands = lazy(() => import("@/components/extensions").then(m => ({ default: m.ExtensionProfilerCommands })));
+
+// TERMINAL TOOLS
+const TerminalToolsCommands = lazy(() => import("@/components/terminal/TerminalToolsCommands").then(m => ({ default: m.TerminalToolsCommands })));
+const TerminalGroupCommands = lazy(() => import("@/components/TerminalGroupCommands").then(m => ({ default: m.TerminalGroupCommands })));
+
+// CODE NAVIGATION
+const ReferencesView = lazy(() => import("@/components/ReferencesView").then(m => ({ default: m.ReferencesView })));
+const CallHierarchyPanel = lazy(() => import("@/components/CallHierarchyView").then(m => ({ default: m.CallHierarchyPanel })));
+const TypeHierarchyView = lazy(() => import("@/components/TypeHierarchyView").then(m => ({ default: m.TypeHierarchyView })));
+
+// SEARCH
+const SearchEditorWithState = lazy(() => import("@/components/SearchEditor").then(m => {
+  const Wrapper = () => {
+    const { SearchEditorComponent } = m.useSearchEditor();
+    return SearchEditorComponent();
+  };
+  return { default: Wrapper };
+}));
+const SearchInOpenEditorsWithState = lazy(() => import("@/components/search/SearchInOpenEditors").then(m => {
+  const Wrapper = () => {
+    const { SearchInOpenEditorsComponent } = m.useSearchInOpenEditors();
+    return SearchInOpenEditorsComponent();
+  };
+  return { default: Wrapper };
+}));
+
+// DEBUG
+const StepInTargetsMenuGlobal = lazy(() => import("@/components/debugger/StepInTargetsMenu").then(m => ({ default: m.StepInTargetsMenuGlobal })));
+const DebugKeyboardHandler = lazy(() => import("@/components/debugger/DebugKeyboardHandler").then(m => ({ default: m.DebugKeyboardHandler })));
+
+// ============================================================================
+// Deep Link Types — must match Rust DeepLinkAction in src-tauri/src/deep_link.rs
+// ============================================================================
+interface DeepLinkOpenFile { type: "OpenFile"; payload: { path: string }; }
+interface DeepLinkOpenFolder { type: "OpenFolder"; payload: { path: string; new_window: boolean }; }
+interface DeepLinkOpenGoto { type: "OpenGoto"; payload: { path: string; line: number; column: number | null }; }
+interface DeepLinkOpenDiff { type: "OpenDiff"; payload: { left: string; right: string }; }
+interface DeepLinkAddFolder { type: "AddFolder"; payload: { path: string }; }
+interface DeepLinkOpenSettings { type: "OpenSettings"; payload: { section: string }; }
+interface DeepLinkUnknown { type: "Unknown"; payload: { raw_url: string }; }
+type DeepLinkAction = DeepLinkOpenFile | DeepLinkOpenFolder | DeepLinkOpenGoto | DeepLinkOpenDiff | DeepLinkAddFolder | DeepLinkOpenSettings | DeepLinkUnknown;
+
+// ============================================================================
+// MCP Listeners - Deferred initialization
+// ============================================================================
+let mcpCleanup: (() => void) | null = null;
+let mcpInitialized = false;
+
+async function initMcpListeners() {
+  if (mcpInitialized) return;
+  mcpInitialized = true;
+  try {
+    const { setupMcpListeners, cleanupMcpListeners } = await import("@/utils/mcp-listeners");
+    await setupMcpListeners();
+    mcpCleanup = cleanupMcpListeners;
+  } catch (err) {
+    mcpInitialized = false;
+    console.error("[MCP] Failed to initialize listeners:", err);
+  }
+}
+
+// ============================================================================
+// Helper Components - Now safe to use hooks directly
+// ============================================================================
+
+/** Registers extension commands with the command palette */
+function ExtensionCommandRegistrar(): null {
+  const extensions = useExtensions();
+  const commands = useCommands();
+  
+  createEffect(() => {
+    const rawExtensions = extensions.enabledExtensions();
+    const currentExtensions = Array.isArray(rawExtensions) ? rawExtensions : [];
+    let cmds: { id: string; label: string; category: string; action: () => Promise<any> }[] = [];
+    try {
+      cmds = currentExtensions.flatMap(ext => 
+        (ext.manifest?.contributes?.commands || []).map(contrib => ({
+          id: contrib.command,
+          label: contrib.title,
+          category: contrib.category || ext.manifest?.name || 'Unknown',
+          action: () => extensions.executeExtensionCommand(contrib.command)
+        }))
+      );
+    } catch (err) {
+      console.error("Failed to register extension commands:", err);
+    }
+    
+    cmds.forEach(cmd => commands.registerCommand(cmd));
+    
+    onCleanup(() => {
+      cmds.forEach(cmd => commands.unregisterCommand(cmd.id));
+    });
+  });
+  
+  return null;
+}
+
+/** Listens for extension notifications */
+function ExtensionNotificationListener(): null {
+  const toast = useToast();
+  let unlisten: (() => void) | undefined;
+
+  onCleanup(() => unlisten?.());
+
+  onMount(async () => {
+    unlisten = await listen("extension:notification", (event: any) => {
+      const payload = event?.payload;
+      if (!payload) return;
+      const { type, message } = payload;
+      if (type === "info") toast.info(message);
+      else if (type === "error") toast.error(message);
+    });
+  });
+
+  return null;
+}
+
+/** Handles cortex:// deep link events */
+function DeepLinkHandler(): null {
+  const toast = useToast();
+  const editor = useEditor();
+  const workspace = useWorkspace();
+  let unlisten: (() => void) | undefined;
+
+  onCleanup(() => unlisten?.());
+
+  onMount(async () => {
+    unlisten = await listen<DeepLinkAction>("deep:link", async (event) => {
+      const action = event.payload;
+      if (import.meta.env.DEV) console.log("[DeepLink] Received:", action);
+
+      switch (action.type) {
+        case "OpenFile": {
+          try {
+            await editor.openFile(action.payload.path);
+            toast.info(`Opened: ${action.payload.path.split(/[\\/]/).pop()}`);
+          } catch (err) {
+            toast.error(`Failed to open: ${action.payload.path}`);
+          }
+          break;
+        }
+        case "OpenFolder": {
+          setProjectPath(action.payload.path);
+          localStorage.setItem(`cortex_current_project_${getWindowLabel()}`, action.payload.path);
+          window.dispatchEvent(new CustomEvent("workspace:change", { detail: { path: action.payload.path } }));
+          toast.info(`Opening: ${action.payload.path.split(/[\\/]/).pop()}`);
+          setTimeout(() => window.location.reload(), 100);
+          break;
+        }
+        case "OpenGoto": {
+          try {
+            await editor.openFile(action.payload.path);
+            window.dispatchEvent(new CustomEvent("editor:goto-line", {
+              detail: { line: action.payload.line, column: action.payload.column ?? 1 },
+            }));
+            toast.info(`Opened: ${action.payload.path.split(/[\\/]/).pop()} at line ${action.payload.line}`);
+          } catch (err) {
+            toast.error(`Failed to open: ${action.payload.path}`);
+          }
+          break;
+        }
+        case "OpenDiff": {
+          window.dispatchEvent(new CustomEvent("diff:open", {
+            detail: { left: action.payload.left, right: action.payload.right },
+          }));
+          break;
+        }
+        case "AddFolder": {
+          try {
+            await workspace.addFolder(action.payload.path);
+            toast.info(`Added folder: ${action.payload.path.split(/[\\/]/).pop()}`);
+          } catch (err) {
+            toast.error(`Failed to add folder: ${action.payload.path}`);
+          }
+          break;
+        }
+        case "OpenSettings": {
+          window.dispatchEvent(new CustomEvent("settings:open-tab", {
+            detail: { section: action.payload.section },
+          }));
+          break;
+        }
+        case "Unknown": {
+          toast.error("Unknown deep link format");
+          break;
+        }
+      }
+    });
+  });
+
+  return null;
+}
+
+/** Bridges AI slash command context requests to editor/workspace/terminal contexts */
+function AIContextBridge(): null {
+  const editor = useEditor();
+  const editorCursor = useEditorCursor();
+  const workspace = useWorkspace();
+
+  const handleRequestSelection = () => {
+    const selection = editorCursor.primarySelection();
+    const activeFile = editor.selectors.activeFile();
+    const text = selection?.text || "";
+    const filePath = activeFile?.path;
+    const range = selection
+      ? {
+          startLine: selection.startLine,
+          startColumn: selection.startColumn,
+          endLine: selection.endLine,
+          endColumn: selection.endColumn,
+        }
+      : undefined;
+    window.dispatchEvent(
+      new CustomEvent("ai:selection-response", {
+        detail: { text, filePath, range },
+      })
+    );
+  };
+
+  const handleRequestWorkspace = () => {
+    const folders = workspace.folders().map((f) => ({ path: f.path, name: f.name }));
+    const activeFolder = workspace.activeFolder() || undefined;
+    window.dispatchEvent(
+      new CustomEvent("ai:workspace-response", {
+        detail: { folders, activeFolder },
+      })
+    );
+  };
+
+  const handleRequestTerminal = (_e: Event) => {
+    window.dispatchEvent(
+      new CustomEvent("ai:terminal-response", {
+        detail: { output: "", terminalId: undefined },
+      })
+    );
+  };
+
+  onMount(() => {
+    window.addEventListener("ai:request-selection", handleRequestSelection);
+    window.addEventListener("ai:request-workspace", handleRequestWorkspace);
+    window.addEventListener("ai:request-terminal", handleRequestTerminal);
+  });
+
+  onCleanup(() => {
+    window.removeEventListener("ai:request-selection", handleRequestSelection);
+    window.removeEventListener("ai:request-workspace", handleRequestWorkspace);
+    window.removeEventListener("ai:request-terminal", handleRequestTerminal);
+  });
+
+  return null;
+}
+
+// ============================================================================
+// MAIN APP CONTENT - Rendered inside OptimizedProviders
+// ============================================================================
+function AppContent(props: ParentProps) {
+  const windowInfo = useAuxiliaryWindowInfo();
+  const layout = useLayout();
+  const notifications = useNotifications();
+  const output = useOutput();
+  const { settings } = useSettings();
+
+  // Window lifecycle events (close-requested with dirty file prompt, focus/blur,
+  // beforeunload, visibilitychange, force-close cleanup)
+  useWindowEvents();
+
+  // Auto-save dirty files based on user settings (afterDelay, onFocusChange, onWindowChange)
+  useAutoSave();
+
+  // Apply theme settings (font family, font size, zoom) to document root
+  createEffect(() => {
+    const theme = settings().theme;
+    const docStyle = document.documentElement.style;
+    if (theme.uiFontFamily) {
+      docStyle.setProperty("font-family", theme.uiFontFamily);
+    }
+    if (theme.uiFontSize) {
+      docStyle.setProperty("font-size", `${theme.uiFontSize}px`);
+    }
+    if (theme.zoomLevel && theme.zoomLevel !== 1) {
+      docStyle.setProperty("zoom", String(theme.zoomLevel));
+    } else {
+      docStyle.removeProperty("zoom");
+    }
+  });
+
+  // Global error handler (unhandled rejections, uncaught errors)
+  let cleanupErrorHandler: (() => void) | undefined;
+  
+  // Dialog states
+  const [showFeedback, setShowFeedback] = createSignal(false);
+  const [feedbackType, setFeedbackType] = createSignal<FeedbackType>("general");
+  const [showSettings, setShowSettings] = createSignal(false);
+  const [settingsInitialJsonView, setSettingsInitialJsonView] = createSignal(false);
+  const [settingsInitialShowDefaults, setSettingsInitialShowDefaults] = createSignal(false);
+  const [showTasksJsonEditor, setShowTasksJsonEditor] = createSignal(false);
+  const [showCloneRepository, setShowCloneRepository] = createSignal(false);
+  const [cloneLoading, setCloneLoading] = createSignal(false);
+  
+  // Feature visibility states - used to gate lazy loading
+  const [devToolsEnabled, setDevToolsEnabled] = createSignal(false);
+  const [terminalUsed, setTerminalUsed] = createSignal(false);
+  const [replUsed, setReplUsed] = createSignal(false);
+  const [journalUsed, setJournalUsed] = createSignal(false);
+  const [snippetsUsed, setSnippetsUsed] = createSignal(false);
+  const [aiUsed, setAiUsed] = createSignal(false);
+  const [tasksUsed, setTasksUsed] = createSignal(false);
+  const [bookmarksUsed, setBookmarksUsed] = createSignal(false);
+  const [debugUsed, setDebugUsed] = createSignal(false);
+
+  // Event handlers
+  const handleFeedbackOpen = (e: CustomEvent<{ type?: FeedbackType }>) => {
+    batch(() => {
+      if (e.detail?.type) setFeedbackType(e.detail.type);
+      setShowFeedback(true);
+    });
+  };
+
+  const [settingsInitialSection, setSettingsInitialSection] = createSignal<string | undefined>(undefined);
+  
+  const handleSettingsOpen = (e: Event) => {
+    const custom = e as CustomEvent<{ jsonView?: boolean; showDefaults?: boolean; section?: string }>;
+    batch(() => {
+      setSettingsInitialJsonView(custom.detail?.jsonView ?? false);
+      setSettingsInitialShowDefaults(custom.detail?.showDefaults ?? false);
+      setSettingsInitialSection(custom.detail?.section);
+      setShowSettings(true);
+    });
+  };
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "u") {
+      e.preventDefault();
+      setFeedbackType("general");
+      setShowFeedback(true);
+    }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === ",") {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent("settings:open-tab"));
+    }
+  };
+
+  const handleCloneRepository = async (url: string, targetDir: string, _openAfterClone: boolean) => {
+    setCloneLoading(true);
+    setTerminalUsed(true); // Enable terminal when cloning
+    try {
+      window.dispatchEvent(new CustomEvent("terminal:new"));
+      await new Promise(r => setTimeout(r, 500));
+      window.dispatchEvent(new CustomEvent("terminal:write-active", { 
+        detail: { data: `git clone "${url}" "${targetDir}"\n` } 
+      }));
+      setShowCloneRepository(false);
+    } finally {
+      setCloneLoading(false);
+    }
+  };
+
+  const handleTasksJsonEditor = () => setShowTasksJsonEditor(true);
+  const handleGitCloneRepository = () => setShowCloneRepository(true);
+  const handleTerminalNew = () => setTerminalUsed(true);
+  const handleTerminalOpen = () => setTerminalUsed(true);
+  const handleReplOpen = () => setReplUsed(true);
+  const handleJournalOpen = () => setJournalUsed(true);
+  const handleSnippetsOpen = () => setSnippetsUsed(true);
+  const handleAiOpen = () => setAiUsed(true);
+  const handleTasksOpen = () => setTasksUsed(true);
+  const handleBookmarksOpen = () => setBookmarksUsed(true);
+  const handleDebugStart = () => setDebugUsed(true);
+  const handleDevInspector = () => setDevToolsEnabled(true);
+
+  onMount(() => {
+    if (import.meta.env.DEV) console.log(`[STARTUP] AppContent mounted @ ${performance.now().toFixed(1)}ms`);
+
+    // Global error handler for unhandled errors/rejections
+    cleanupErrorHandler = initGlobalErrorHandler({
+      notify: (opts) => notifications.notify(opts),
+      appendLine: (channel, text, opts) => output.appendLine(channel, text, opts),
+    });
+    
+    // Event listeners for core functionality
+    window.addEventListener("feedback:open", handleFeedbackOpen as EventListener);
+    window.addEventListener("settings:open", handleSettingsOpen);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("tasks:open-json-editor", handleTasksJsonEditor);
+    window.addEventListener("git:clone-repository", handleGitCloneRepository);
+    
+    // Feature activation listeners - gate lazy loading
+    window.addEventListener("terminal:new", handleTerminalNew);
+    window.addEventListener("terminal:open", handleTerminalOpen);
+    window.addEventListener("repl:open", handleReplOpen);
+    window.addEventListener("journal:open", handleJournalOpen);
+    window.addEventListener("snippets:open", handleSnippetsOpen);
+    window.addEventListener("ai:open", handleAiOpen);
+    window.addEventListener("tasks:open", handleTasksOpen);
+    window.addEventListener("bookmarks:open", handleBookmarksOpen);
+    window.addEventListener("debug:start", handleDebugStart);
+    window.addEventListener("dev:inspector", handleDevInspector);
+
+    // Deferred MCP initialization
+    if ('requestIdleCallback' in window) {
+      (window as any).requestIdleCallback(() => initMcpListeners(), { timeout: 2000 });
+    } else {
+      setTimeout(initMcpListeners, 500);
+    }
+
+    // Window state tracking
+    const appWindow = getCurrentWebviewWindow();
+    const label = getWindowLabel();
+
+    const updateState = async () => {
+      try {
+        const factor = await appWindow.scaleFactor();
+        const pos = await appWindow.outerPosition();
+        const size = await appWindow.innerSize();
+        const maximized = await appWindow.isMaximized();
+        
+        await invoke("update_window_state", {
+          label,
+          x: pos.toLogical(factor).x,
+          y: pos.toLogical(factor).y,
+          width: size.toLogical(factor).width,
+          height: size.toLogical(factor).height,
+          isMaximized: maximized
+        });
+      } catch (err) { console.debug("Failed to get window state:", err); }
+    };
+
+    updateState();
+
+    const listeners: (() => void)[] = [];
+    appWindow.onResized(updateState).then(u => listeners.push(u));
+    appWindow.onMoved(updateState).then(u => listeners.push(u));
+
+    onCleanup(() => listeners.forEach(u => u()));
+  });
+
+  onCleanup(() => {
+    window.removeEventListener("feedback:open", handleFeedbackOpen as EventListener);
+    window.removeEventListener("settings:open", handleSettingsOpen);
+    window.removeEventListener("keydown", handleKeyDown);
+    window.removeEventListener("tasks:open-json-editor", handleTasksJsonEditor);
+    window.removeEventListener("git:clone-repository", handleGitCloneRepository);
+    window.removeEventListener("terminal:new", handleTerminalNew);
+    window.removeEventListener("terminal:open", handleTerminalOpen);
+    window.removeEventListener("repl:open", handleReplOpen);
+    window.removeEventListener("journal:open", handleJournalOpen);
+    window.removeEventListener("snippets:open", handleSnippetsOpen);
+    window.removeEventListener("ai:open", handleAiOpen);
+    window.removeEventListener("tasks:open", handleTasksOpen);
+    window.removeEventListener("bookmarks:open", handleBookmarksOpen);
+    window.removeEventListener("debug:start", handleDebugStart);
+    window.removeEventListener("dev:inspector", handleDevInspector);
+    if (mcpCleanup) { mcpCleanup(); mcpCleanup = null; mcpInitialized = false; }
+    if (cleanupErrorHandler) cleanupErrorHandler();
+    document.documentElement.style.removeProperty("font-family");
+    document.documentElement.style.removeProperty("font-size");
+    document.documentElement.style.removeProperty("zoom");
+    invoke("unregister_window", { label: getWindowLabel() }).catch(() => {});
+  });
+
+  // Reactive: enable terminal when panel is visible with terminal active
+  createEffect(() => {
+    if (layout.state.panel.visible && layout.state.panel.activeViewId === "terminal") {
+      setTerminalUsed(true);
+    }
+  });
+
+  return (
+    <Show when={windowInfo.isAuxiliaryWindow} fallback={
+      <>
+        <Show when={props.children} fallback={<div class="p-4 text-white">Route not found</div>}>
+          {props.children}
+        </Show>
+        
+        {/* Helper components - hooks are now safe */}
+        <ExtensionCommandRegistrar />
+        <ExtensionNotificationListener />
+        <DeepLinkHandler />
+        <AIContextBridge />
+        
+        {/* ============================================================ */}
+        {/* TIER 1: ALWAYS VISIBLE - Critical UI */}
+        {/* ============================================================ */}
+        <Suspense>
+          <ToastManager />
+          <NotificationCenter />
+          <PaletteCommandPalette />
+          <PaletteQuickOpen />
+          <ViewQuickAccess />
+          <WhichKey />
+          <ScreencastMode />
+          <AutoUpdateDialog />
+          
+          {/* Profile management - lightweight */}
+          <ProfileSwitcher />
+          <ProfileManager />
+          <ProfileCommands />
+          <ExtensionProfilerCommands />
+        </Suspense>
+        
+        {/* ============================================================ */}
+        {/* TIER 2: FILE NAVIGATION - Load early for productivity */}
+        {/* ============================================================ */}
+        <Suspense>
+          <FileFinder />
+          <BufferSearch />
+          <GoToLineDialog />
+          <GoToSymbolDialog />
+          <ProjectSearch />
+          <SearchEditorWithState />
+          <SearchInOpenEditorsWithState />
+          <ProjectSymbols />
+          <WorkspaceSymbolPicker />
+          <TabSwitcher />
+          <LanguageSelectorModal />
+          <EncodingPickerModal />
+        </Suspense>
+        
+        {/* ============================================================ */}
+        {/* TIER 3: CODE NAVIGATION - Load on demand */}
+        {/* ============================================================ */}
+        <Suspense>
+          <ReferencesView />
+          <CallHierarchyPanel />
+          <TypeHierarchyView />
+        </Suspense>
+        
+        {/* ============================================================ */}
+        {/* TIER 4: GATED FEATURES - Only load when first used */}
+        {/* ============================================================ */}
+        
+        {/* Terminal - Only when terminal panel visible or explicitly opened */}
+        <Show when={terminalUsed() || layout.state.panel.visible}>
+          <Suspense>
+            <TerminalPanel />
+            <TerminalToolsCommands />
+            <TerminalGroupCommands />
+          </Suspense>
+        </Show>
+        
+        {/* REPL - Only when REPL opened */}
+        <Show when={replUsed()}>
+          <Suspense>
+            <REPLPanel />
+          </Suspense>
+        </Show>
+        
+        {/* Tasks - Only when tasks used */}
+        <Show when={tasksUsed() || showTasksJsonEditor()}>
+          <Suspense>
+            <TasksPanel />
+            <TaskConfigEditor />
+            <TaskQuickPick />
+            <TasksJsonEditor isOpen={showTasksJsonEditor()} onClose={() => setShowTasksJsonEditor(false)} />
+          </Suspense>
+        </Show>
+        
+        {/* Journal - Only when journal opened */}
+        <Show when={journalUsed()}>
+          <Suspense>
+            <JournalPanel />
+          </Suspense>
+        </Show>
+        
+        {/* Snippets - Only when snippets panel opened */}
+        <Show when={snippetsUsed()}>
+          <Suspense>
+            <SnippetsPanel />
+            <SnippetEditor />
+          </Suspense>
+        </Show>
+        
+        {/* AI Components - Only when AI features used */}
+        <Show when={aiUsed()}>
+          <Suspense>
+            <PromptStore />
+            <PromptEditor />
+            <QuickChat />
+            <SubAgentManager />
+          </Suspense>
+        </Show>
+        
+        {/* Bookmarks - Only when bookmarks panel opened */}
+        <Show when={bookmarksUsed()}>
+          <Suspense>
+            <BookmarksPanel />
+          </Suspense>
+        </Show>
+        
+        {/* Debug - Only when debugging started */}
+        <Show when={debugUsed()}>
+          <Suspense>
+            <StepInTargetsMenuGlobal />
+            <DebugKeyboardHandler />
+          </Suspense>
+        </Show>
+        
+        {/* Dev Tools - Only when inspector activated */}
+        <Show when={devToolsEnabled()}>
+          <Suspense>
+            <ComponentPreview />
+            <InspectorProvider><Inspector /></InspectorProvider>
+          </Suspense>
+        </Show>
+        
+        {/* ============================================================ */}
+        {/* DIALOGS - Only load when explicitly opened */}
+        {/* ============================================================ */}
+        
+        <Show when={showFeedback()}>
+          <Suspense>
+            <DialogErrorBoundary name="FeedbackDialog">
+              <FeedbackDialog isOpen={showFeedback()} onClose={() => setShowFeedback(false)} initialType={feedbackType()} />
+            </DialogErrorBoundary>
+          </Suspense>
+        </Show>
+        
+        <Show when={showSettings()}>
+          <Suspense>
+            <DialogErrorBoundary name="SettingsDialog">
+              <SettingsDialog
+                isOpen={showSettings()}
+                onClose={() => { batch(() => { setShowSettings(false); setSettingsInitialJsonView(false); setSettingsInitialShowDefaults(false); setSettingsInitialSection(undefined); }); }}
+                initialJsonView={settingsInitialJsonView()}
+                initialShowDefaults={settingsInitialShowDefaults()}
+                initialSection={settingsInitialSection()}
+              />
+            </DialogErrorBoundary>
+          </Suspense>
+        </Show>
+        
+        <Show when={showCloneRepository()}>
+          <Suspense>
+            <DialogErrorBoundary name="CloneRepositoryDialog">
+              <CloneRepositoryDialog
+                open={showCloneRepository()}
+                onClone={handleCloneRepository}
+                onCancel={() => setShowCloneRepository(false)}
+                loading={cloneLoading()}
+              />
+            </DialogErrorBoundary>
+          </Suspense>
+        </Show>
+        
+        {/* Emmet wrap dialog - usually invoked via shortcut */}
+        <Suspense>
+          <EmmetWrapDialog />
+        </Suspense>
+      </>
+    }>
+      <Suspense>
+        <AuxiliaryWindow />
+      </Suspense>
+    </Show>
+  );
+}
+
+// ============================================================================
+// ROOT APP CORE COMPONENT
+// ============================================================================
+export default function AppCore(props: ParentProps) {
+  if (import.meta.env.DEV) console.log(`[STARTUP] AppCore rendering @ ${performance.now().toFixed(1)}ms`);
+  
+  return (
+    <OptimizedProviders>
+      <AppContent {...props}>{props.children}</AppContent>
+    </OptimizedProviders>
+  );
+}
