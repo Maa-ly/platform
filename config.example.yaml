@@ -1,0 +1,74 @@
+# Copy to config.yaml and edit values.
+# Required environment variables:
+#   GH_TOKEN_1 ... GH_TOKEN_6
+# Optional external dedup token:
+#   GH_EXTERNAL_DEDUP_TOKEN
+
+runtime:
+  state_dir: .audit_state
+  poll_interval_seconds: 120
+  valid_target_per_repo: 25
+  stop_when_targets_met: true
+
+submission:
+  # Enforced issue title format.
+  # {title} is replaced with the detector finding title.
+  title_template: "[Bug][alpha]{title}"
+  # Shared destination repo for all submitter tokens below.
+  issue_repo: "PlatformNetwork/bounty-challenge"
+
+external_dedup:
+  repo: PlatformNetwork/bounty-challenge
+  token_env: GH_EXTERNAL_DEDUP_TOKEN
+
+proof:
+  allowed_image_extensions: [".png", ".jpg", ".jpeg"]
+  allowed_video_extensions: [".mp4", ".mov", ".webm"]
+  # Required if detector returns local proof files instead of URLs.
+  # upload_cmd must print a public URL to stdout.
+  # Example:
+  # upload_cmd: "PROOF_UPLOAD_BACKEND=github_repo PROOF_GH_TOKEN=$PROOF_GH_TOKEN PROOF_GH_REPO=your-user/your-proof-repo PROOF_GH_BRANCH=main python3 ./detectors/upload_proof_catbox.py {file_path}"
+  upload_cmd: "python3 ./detectors/upload_proof_catbox.py {file_path}"
+  # Optional: auto-capture native GUI screenshot when detector has no proof artifacts.
+  auto_capture_cmd: "CORTEX_LAUNCH_CMD='PATH=/opt/homebrew/opt/node@22/bin:$PATH npm run tauri:dev' CORTEX_LAUNCH_TIMEOUT=900 python3 ./detectors/cortex_gui_capture.py --repo-path {repo_path} --finding-id {finding_id} --file {evidence_file} --line {evidence_line}"
+  screenshot_example_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22537"
+  video_example_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22534"
+  banned_format_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22375#issuecomment-3983776205"
+
+repositories:
+  - github_name: github-user-1
+    token: GH_TOKEN_1
+  - github_name: github-user-2
+    token: GH_TOKEN_2
+  - github_name: github-user-3
+    token: GH_TOKEN_3
+  - github_name: github-user-4
+    token: GH_TOKEN_4
+  - github_name: github-user-5
+    token: GH_TOKEN_5
+  - github_name: github-user-6
+    token: GH_TOKEN_6
+
+prompts:
+  # detector_cmd is user-defined and can invoke any tool/model.
+  # It must print JSON to stdout:
+  # [
+  #   {
+  #     "title": "Bug title",
+  #     "description": "Observed vulnerable behavior",
+  #     "reproduction_steps": ["step 1", "step 2"],
+  #     "impact": "Security impact",
+  #     "native_gui": "Cortex IDE",
+  #     "proof_artifacts": ["https://proof-host/path/video.mp4"],
+  #     "fingerprint": "optional stable detector fingerprint"
+  #   }
+  # ]
+  - id: auth-bypass
+    prompt: "Find authorization bypass paths in request handlers and permission middleware."
+    severity: high
+    detector_cmd: "python3 ./detectors/cortex_static_triage_detector.py"
+
+  - id: injection
+    prompt: "Find SQL/command/template injection sinks with reachable user-controlled input."
+    severity: critical
+    detector_cmd: "python3 ./detectors/cortex_static_triage_detector.py"
