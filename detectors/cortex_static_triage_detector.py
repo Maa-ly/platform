@@ -208,6 +208,150 @@ def main() -> None:
             )
 
     # -------------------------------------------------------------------------
+    # Finding 2b: Quick Access advertises % text-search provider but never registers it
+    # -------------------------------------------------------------------------
+    help_percent_label = 'label: "%"'
+    help_percent_detail = "Type % followed by text to search in all files"
+    text_provider_prefix = 'prefix: "%"'
+    registered_percent_provider = 'providerMap.set("%",'
+    text_provider_file = repo_path / "src/providers/quickaccess/TextSearchProvider.ts"
+
+    if help_provider.exists() and qa_context.exists() and text_provider_file.exists():
+        has_help_percent = find_line_number(help_provider, help_percent_label) is not None
+        has_text_provider = find_line_number(text_provider_file, text_provider_prefix) is not None
+        has_percent_registration = find_line_number(qa_context, registered_percent_provider) is not None
+
+        if has_help_percent and has_text_provider and not has_percent_registration:
+            finding_id = "quickaccess-percent-provider-unreachable"
+            evidence = [
+                (help_provider, help_percent_detail),
+                (text_provider_file, text_provider_prefix),
+                (qa_context, 'providerMap.set("ext ", extensionProvider);'),
+            ]
+            findings.append(
+                {
+                    "finding_id": finding_id,
+                    "evidence_file": str(help_provider),
+                    "evidence_line": find_line_number(help_provider, help_percent_label),
+                    "title": "Quick Access Help advertises '%' file-text search, but '%' provider is never registered",
+                    "description": (
+                        "Help lists `%` as 'Search in Files', and TextSearchProvider defines prefix `%`, "
+                        "but QuickAccessContext never registers a `%` provider in providerMap. Users are "
+                        "directed to a prefix that falls back to the default files provider.\n\nEvidence:\n"
+                        + format_evidence(repo_path, evidence)
+                    ),
+                    "reproduction_steps": [
+                        "Open Quick Access in Cortex IDE.",
+                        "Type `?` and select `% - Search in Files`.",
+                        "Observe `%` does not activate text-search provider behavior and routes to default provider flow.",
+                    ],
+                    "impact": (
+                        "Expected text-search quick access path is unreachable from UI help, causing dead-end "
+                        "navigation and misleading command guidance."
+                    ),
+                    "project": "cortex-ide",
+                    "expected_behavior": (
+                        "Selecting `%` from Help should activate a registered `%` provider backed by TextSearchProvider."
+                    ),
+                    "actual_behavior": (
+                        "`%` is advertised but not registered, so users cannot reach the intended text-search provider."
+                    ),
+                    "error_message": "No explicit error is shown; provider mismatch is silent.",
+                    "debug_logs": "No debug logs required; mismatch is deterministic from Help/registration wiring.",
+                    "system_information": "Native GUI: Cortex IDE",
+                    "additional_context": "Help, provider implementation, and providerMap registration are out of sync for `%`.",
+                    "native_gui": "Cortex IDE",
+                    "proof_artifacts": optional_proofs(repo_path, finding_id),
+                    "fingerprint": build_fingerprint([
+                        finding_id,
+                        str(help_provider),
+                        str(text_provider_file),
+                        str(qa_context),
+                    ]),
+                    "dedup_hints": [
+                        "Quick Access Help advertises percent prefix Search in Files but percent provider is never registered",
+                        "TextSearchProvider prefix percent exists but QuickAccessContext does not register providerMap set percent",
+                        "Type percent followed by text to search in all files command routes to default provider instead",
+                    ],
+                }
+            )
+
+    # -------------------------------------------------------------------------
+    # Finding 2c: Editor MRU provider exists but is never registered in router
+    # -------------------------------------------------------------------------
+    quickaccess_index = repo_path / "src/providers/quickaccess/index.ts"
+    editor_mru_provider = repo_path / "src/providers/quickaccess/EditorMRUProvider.tsx"
+    editor_mru_prefix = 'prefix: "edt mru "'
+    editor_mru_export = 'export { createEditorMRUProvider } from "./EditorMRUProvider";'
+    registered_editor_mru = 'providerMap.set("edt mru ",'
+    if quick_access := (repo_path / "src/context/QuickAccessContext.tsx"):
+        if (
+            quick_access.exists()
+            and editor_mru_provider.exists()
+            and quickaccess_index.exists()
+            and find_line_number(editor_mru_provider, editor_mru_prefix) is not None
+            and find_line_number(quickaccess_index, editor_mru_export) is not None
+            and find_line_number(quick_access, registered_editor_mru) is None
+        ):
+            finding_id = "quickaccess-editor-mru-provider-unreachable"
+            evidence = [
+                (editor_mru_provider, editor_mru_prefix),
+                (quickaccess_index, editor_mru_export),
+                (quick_access, 'providerMap.set("ext ", extensionProvider);'),
+                (quick_access, 'providerMap.set("", filesProvider);'),
+            ]
+            findings.append(
+                {
+                    "finding_id": finding_id,
+                    "evidence_file": str(editor_mru_provider),
+                    "evidence_line": find_line_number(editor_mru_provider, editor_mru_prefix),
+                    "title": "Quick Access has an 'edt mru ' provider implementation, but router never registers it",
+                    "description": (
+                        "EditorMRUProvider is implemented and exported with prefix `edt mru `, but "
+                        "QuickAccessContext does not register that prefix in `providerMap`. The MRU quick-access "
+                        "feature is unreachable from the GUI command router.\n\nEvidence:\n"
+                        + format_evidence(repo_path, evidence)
+                    ),
+                    "reproduction_steps": [
+                        "Open Quick Access in Cortex IDE (`Ctrl+P`).",
+                        "Type `edt mru `.",
+                        "Observe the MRU provider UI (Pinned Editors / Recent Editors / No open editors) never appears.",
+                        "Open `?` help in Quick Access and verify there is no `edt mru ` prefix entry.",
+                    ],
+                    "impact": (
+                        "A shipped quick-access provider is dead code from user perspective; users cannot access "
+                        "the MRU editor workflow despite implemented provider logic."
+                    ),
+                    "project": "cortex-ide",
+                    "expected_behavior": (
+                        "`edt mru ` should activate Editor MRU provider and expose recent/pinned editor items."
+                    ),
+                    "actual_behavior": (
+                        "`edt mru ` is not routed to any provider because the prefix is never registered."
+                    ),
+                    "error_message": "No explicit error; quick-access routing silently falls back to non-MRU behavior.",
+                    "debug_logs": "No runtime logs required; provider implementation/export exists without router registration.",
+                    "system_information": "Native GUI: Cortex IDE",
+                    "additional_context": "The prefix exists in provider source but is absent from providerMap registration block.",
+                    "native_gui": "Cortex IDE",
+                    "proof_artifacts": optional_proofs(repo_path, finding_id),
+                    "fingerprint": build_fingerprint(
+                        [
+                            finding_id,
+                            str(editor_mru_provider),
+                            str(quickaccess_index),
+                            str(quick_access),
+                            editor_mru_prefix,
+                        ]
+                    ),
+                    "dedup_hints": [
+                        "EditorMRUProvider prefix edt mru exists but QuickAccessContext never registers providerMap set edt mru",
+                        "quick access edt mru provider unreachable because router registration is missing",
+                    ],
+                }
+            )
+
+    # -------------------------------------------------------------------------
     # Finding 3: Wrong default repository URL in IssueReporterProvider
     # -------------------------------------------------------------------------
     issue_provider = repo_path / "src/providers/quickaccess/IssueReporterProvider.ts"
@@ -302,6 +446,83 @@ def main() -> None:
                 "native_gui": "Cortex IDE",
                 "proof_artifacts": optional_proofs(repo_path, finding_id),
                 "fingerprint": build_fingerprint([finding_id, str(issue_provider), str(package_json)]),
+            }
+        )
+
+    # -------------------------------------------------------------------------
+    # Finding 5: Feedback dialog collects screenshot files but submission drops payload
+    # -------------------------------------------------------------------------
+    feedback_dialog = repo_path / "src/components/FeedbackDialog.tsx"
+    tauri_ai_mod = repo_path / "src-tauri/src/ai/mod.rs"
+    screenshot_ui_capture = 'updateForm("screenshots", [...form().screenshots, ...newFiles]);'
+    screenshot_submit_count_only = "screenshotCount: f.screenshots.length,"
+    screenshot_todo_comment = "// Note: Screenshots need to be handled separately as base64"
+    rust_screenshot_count = "pub screenshot_count: Option<u32>,"
+
+    if (
+        feedback_dialog.exists()
+        and tauri_ai_mod.exists()
+        and find_line_number(feedback_dialog, screenshot_ui_capture)
+        and find_line_number(feedback_dialog, screenshot_submit_count_only)
+        and find_line_number(tauri_ai_mod, rust_screenshot_count)
+    ):
+        finding_id = "feedback-screenshots-dropped-on-submit"
+        evidence = [
+            (feedback_dialog, screenshot_ui_capture),
+            (feedback_dialog, screenshot_submit_count_only),
+            (feedback_dialog, screenshot_todo_comment),
+            (tauri_ai_mod, rust_screenshot_count),
+        ]
+        findings.append(
+            {
+                "finding_id": finding_id,
+                "evidence_file": str(feedback_dialog),
+                "evidence_line": find_line_number(feedback_dialog, screenshot_submit_count_only),
+                "title": "Feedback dialog accepts screenshots but drops them during submission",
+                "description": (
+                    "FeedbackDialog lets users attach screenshots and shows previews, but submit payload "
+                    "only sends `screenshotCount` with no screenshot bytes/paths. Rust `submit_feedback` "
+                    "schema also only accepts a numeric count, so uploaded screenshots are silently dropped.\n\nEvidence:\n"
+                    + format_evidence(repo_path, evidence)
+                ),
+                "reproduction_steps": [
+                    "Open Help -> Send Feedback in Cortex IDE.",
+                    "Attach one or more screenshots in the dialog and confirm previews appear.",
+                    "Submit feedback via backend path.",
+                    "Observe submission payload/schema only includes screenshot count; no screenshot content is sent.",
+                ],
+                "impact": (
+                    "Critical debugging evidence attached by users is lost, producing incomplete bug reports "
+                    "and increasing triage/reproduction failures."
+                ),
+                "project": "cortex-ide",
+                "expected_behavior": (
+                    "When screenshots are attached, submission should include screenshot payload (file bytes, "
+                    "temporary file references, or uploaded URLs) in backend request data."
+                ),
+                "actual_behavior": (
+                    "The app records only `screenshotCount` and drops actual screenshot payload."
+                ),
+                "error_message": "No visible error; submission appears successful while screenshot artifacts are lost.",
+                "debug_logs": "submit_feedback logs screenshot_count only; no screenshot payload fields are present.",
+                "system_information": "Native GUI: Cortex IDE",
+                "additional_context": (
+                    "UI supports screenshot selection/previews, but transport schema and payload do not include files."
+                ),
+                "native_gui": "Cortex IDE",
+                "proof_artifacts": optional_proofs(repo_path, finding_id),
+                "fingerprint": build_fingerprint([
+                    finding_id,
+                    str(feedback_dialog),
+                    str(tauri_ai_mod),
+                    screenshot_submit_count_only,
+                    rust_screenshot_count,
+                ]),
+                "dedup_hints": [
+                    "FeedbackDialog accepts screenshot files but submit_feedback only receives screenshotCount",
+                    "Attached screenshots are previewed in UI but dropped because backend payload has no screenshot field",
+                    "submit_feedback schema only has screenshot_count and no screenshot bytes or file references",
+                ],
             }
         )
 

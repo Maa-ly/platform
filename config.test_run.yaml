@@ -1,56 +1,62 @@
-# Active configuration for the bug hunting pipeline.
+# Live configuration for PlatformNetwork bounty submission tests.
 # Required environment variables:
-#   GH_TOKEN_1 ... GH_TOKEN_6
+#   GH_TOKEN
 # Optional external dedup token:
 #   GH_EXTERNAL_DEDUP_TOKEN
 
 runtime:
-  state_dir: .audit_state_keeper_tauri_test_run_1772544629
+  state_dir: .audit_state_keeper_live_run
   poll_interval_seconds: 120
-  valid_target_per_repo: 25
+  valid_target_per_repo: 1
   stop_when_targets_met: true
 
 submission:
-  # Enforced issue title format.
-  # {title} is replaced with the detector finding title.
   title_template: "[Bug][alpha]{title}"
-  # Shared destination repo for all submitter tokens below.
-  issue_repo: "Maa-ly/Keeper"
+  issue_repo: "PlatformNetwork/bounty-challenge"
 
 external_dedup:
-  repo: Maa-ly/Keeper
-  token_env: GH_EXTERNAL_DEDUP_TOKEN
+  repo: "https://github.com/PlatformNetwork/bounty-challenge/issues"
+
 
 proof:
-  allowed_image_extensions: [".png", ".jpg", ".jpeg"]
+  allowed_image_extensions: [".png", ".jpg", ".jpeg", ".gif"]
   allowed_video_extensions: [".mp4", ".mov", ".webm"]
-  upload_cmd: "PROOF_UPLOAD_BACKEND=github_repo PROOF_GH_TOKEN=$PROOF_GH_TOKEN PROOF_GH_REPO=Maa-ly/Keeper PROOF_GH_BRANCH=main /Users/odeili/Projects/algo_platform/.venv/bin/python ./detectors/upload_proof_catbox.py {file_path}"
-  auto_capture_cmd: "CORTEX_LAUNCH_CMD='PATH=/opt/homebrew/opt/node@22/bin:$PATH npm run tauri:dev' CORTEX_LAUNCH_TIMEOUT=900 python3 ./detectors/cortex_gui_capture.py --repo-path {repo_path} --finding-id {finding_id} --file {evidence_file} --line {evidence_line}"
+  upload_cmd: "PROOF_UPLOAD_BACKEND=github_attachment PROOF_GIST_BACKUP=1 python3 ./detectors/upload_proof_catbox.py {file_path}"
+  auto_capture_cmd: "CORTEX_ALLOW_WSL_HOST_CAPTURE=1 CORTEX_FORCE_WSL_HOST_VIDEO=1 CORTEX_CAPTURE_VIDEO_SECONDS=8 CORTEX_CAPTURE_EXTRA_SHOTS=1 CORTEX_CAPTURE_VIDEO_FPS=20 CORTEX_WSL_VIDEO_ACTIONS_FILE=./detectors/cortex_wsl_video_actions.json CORTEX_APP_NAME='Cortex IDE' CORTEX_WINDOW_TITLE='Cortex IDE' CORTEX_LAUNCH_CMD='CC=gcc npm run tauri:dev' CORTEX_LAUNCH_TIMEOUT=1200 CORTEX_STRICT_FULL_GUI=1 CORTEX_REQUIRE_ACTION_CLICK=1 python3 ./detectors/cortex_gui_capture.py --repo-path {repo_path} --finding-id {finding_id} --file {evidence_file} --line {evidence_line}"
   screenshot_example_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22537"
   video_example_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22534"
   banned_format_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22375#issuecomment-3983776205"
 
 repositories:
-  - name: test-slot-1
+  - name: live-1
     github_name: Maa-ly
-    token: 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
-  - name: test-slot-2
+    token: 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
+  - name: live-2
     github_name: Maa-ly
-    token: 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
-  - name: test-slot-3
+    token: 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
+  - name: live-3
     github_name: Maa-ly
-    token: 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
-  - name: test-slot-4
+    token: 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
+  - name: live-4
     github_name: Maa-ly
-    token: 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
-  - name: test-slot-5
+    token: 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
+  - name: live-5
     github_name: Maa-ly
-    token: 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
-  - name: test-slot-6
+    token: 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
+  - name: live-6
     github_name: Maa-ly
-    token: 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
+    token: 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
 
 prompts:
+  - id: cortex-open-file-live
+    severity: critical
+    detector_cmd: >-
+      python3 ./detectors/cortex_visible_gui_bugs_detector.py |
+      python3 -c 'import json,sys; data=json.load(sys.stdin); print(json.dumps([x for x in data if x.get("finding_id")=="open-file-label-mismatch-folder-action"]))'
+    prompt: |-
+      Validate the Cortex GUI issue where the title-bar action says "Open File"
+      but routes to folder/project open behavior.
+
   - id: cortex-alpha-hunt
     severity: critical
     detector_cmd: "python3 ./detectors/cortex_static_triage_detector.py"

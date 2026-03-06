@@ -1,0 +1,20 @@
+{
+  "date": "2026-03-05",
+  "repositories": {
+    "kid": {
+      "invalid": 4,
+      "remaining_to_target": 24,
+      "target": 25,
+      "total_submitted": 5,
+      "valid": 1
+    },
+    "marvin": {
+      "invalid": 3,
+      "remaining_to_target": 24,
+      "target": 25,
+      "total_submitted": 4,
+      "valid": 1
+    }
+  },
+  "updated_at": "2026-03-05T17:01:05.146411+00:00"
+}

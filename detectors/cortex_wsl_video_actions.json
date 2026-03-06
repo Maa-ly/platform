@@ -1,0 +1,364 @@
+{
+  "_default": [
+    {"delayMs": 400, "xRatio": 0.2, "yRatio": 0.06, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.36, "yRatio": 0.06, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.56, "yRatio": 0.06, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.16, "yRatio": 0.24, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.16, "yRatio": 0.34, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.16, "yRatio": 0.42, "click": false, "button": "left"}
+  ],
+  "titlebar-menu-missing-run": [
+    {"delayMs": 450, "xRatio": 0.24, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.31, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.39, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.47, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.56, "yRatio": 0.04, "click": false, "button": "left"}
+  ],
+  "titlebar-menu-missing-git": [
+    {"delayMs": 450, "xRatio": 0.31, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.39, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.47, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.56, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.64, "yRatio": 0.04, "click": false, "button": "left"}
+  ],
+  "titlebar-menu-missing-developer": [
+    {"delayMs": 450, "xRatio": 0.39, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.47, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.56, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.64, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.72, "yRatio": 0.04, "click": false, "button": "left"}
+  ],
+  "titlebar-menu-missing-run-git-developer": [
+    {"delayMs": 450, "xRatio": 0.24, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.31, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.39, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.47, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.56, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 600, "xRatio": 0.64, "yRatio": 0.04, "click": false, "button": "left"}
+  ],
+  "open-file-label-mismatch-folder-action": [
+    {"delayMs": 220, "xRatio": 0.10, "yRatio": 0.045, "click": false, "button": "left"},
+    {"delayMs": 220, "xRatio": 0.13, "yRatio": 0.045, "click": true, "button": "left"},
+    {"delayMs": 260, "xRatio": 0.16, "yRatio": 0.045, "click": true, "button": "left"},
+    {"delayMs": 280, "xRatio": 0.20, "yRatio": 0.045, "click": true, "button": "left"},
+    {"delayMs": 1100, "xRatio": 0.22, "yRatio": 0.16, "click": false, "button": "left"},
+    {"delayMs": 500, "xRatio": 0.24, "yRatio": 0.04, "click": false, "button": "left"}
+  ],
+  "activitybar-exposes-unimplemented-dashboard-and-roadmap": [
+    {"delayMs": 500, "xRatio": 0.03, "yRatio": 0.28, "click": false, "button": "left"},
+    {"delayMs": 500, "xRatio": 0.03, "yRatio": 0.28, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.03, "yRatio": 0.36, "click": false, "button": "left"},
+    {"delayMs": 500, "xRatio": 0.03, "yRatio": 0.36, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.12, "yRatio": 0.22, "click": false, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.12, "yRatio": 0.42, "click": false, "button": "left"}
+  ],
+  "dashboard-activity-tab-renders-empty-sidebar": [
+    {"delayMs": 420, "xRatio": 0.018, "yRatio": 0.39, "click": false, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.018, "yRatio": 0.39, "click": true, "button": "left"},
+    {"delayMs": 520, "xRatio": 0.018, "yRatio": 0.39, "click": true, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.12, "yRatio": 0.20, "click": false, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.12, "yRatio": 0.46, "click": false, "button": "left"}
+  ],
+  "roadmap-activity-tab-renders-empty-sidebar": [
+    {"delayMs": 420, "xRatio": 0.018, "yRatio": 0.48, "click": false, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.018, "yRatio": 0.48, "click": true, "button": "left"},
+    {"delayMs": 520, "xRatio": 0.018, "yRatio": 0.48, "click": true, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.12, "yRatio": 0.20, "click": false, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.12, "yRatio": 0.46, "click": false, "button": "left"}
+  ],
+  "plugins-marketplace-search-placeholder-mismatch": [
+    {"delayMs": 500, "xRatio": 0.03, "yRatio": 0.46, "click": false, "button": "left"},
+    {"delayMs": 500, "xRatio": 0.03, "yRatio": 0.46, "click": true, "button": "left"},
+    {"delayMs": 750, "xRatio": 0.16, "yRatio": 0.12, "click": false, "button": "left"},
+    {"delayMs": 500, "xRatio": 0.16, "yRatio": 0.12, "click": true, "button": "left"},
+    {"delayMs": 800, "xRatio": 0.27, "yRatio": 0.12, "click": false, "button": "left"}
+  ],
+  "quickaccess-percent-provider-unreachable": [
+    {"delayMs": 450, "xRatio": 0.46, "yRatio": 0.05, "click": false, "button": "left"},
+    {"delayMs": 450, "xRatio": 0.46, "yRatio": 0.05, "click": true, "button": "left"},
+    {"delayMs": 800, "xRatio": 0.5, "yRatio": 0.18, "click": false, "button": "left"},
+    {"delayMs": 800, "xRatio": 0.5, "yRatio": 0.27, "click": false, "button": "left"}
+  ],
+  "quickaccess-editor-mru-provider-unreachable": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+p"},
+    {"delayMs": 420, "xRatio": 0.52, "yRatio": 0.40, "text": "?"},
+    {"delayMs": 1000, "xRatio": 0.52, "yRatio": 0.19, "click": false, "button": "left"},
+    {"delayMs": 360, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+a"},
+    {"delayMs": 240, "xRatio": 0.52, "yRatio": 0.40, "sendKeys": "{BACKSPACE}"},
+    {"delayMs": 420, "xRatio": 0.52, "yRatio": 0.40, "text": "edt mru "},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.19, "click": false, "button": "left"}
+  ],
+  "feedback-screenshots-dropped-on-submit": [
+    {"delayMs": 350, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 400, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+u"},
+    {"delayMs": 900, "xRatio": 0.63, "yRatio": 0.62, "click": false, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.63, "yRatio": 0.62, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.53, "yRatio": 0.90, "click": false, "button": "left"}
+  ],
+  "feedback-copy-button-toggles-include-system-info": [
+    {"delayMs": 500, "xRatio": 0.50, "yRatio": 0.03, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.53, "yRatio": 0.13, "click": true, "button": "left"},
+    {"delayMs": 1400, "xRatio": 0.87, "yRatio": 0.86, "click": false, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.87, "yRatio": 0.86, "click": true, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.53, "yRatio": 0.90, "click": false, "button": "left"}
+  ],
+  "help-menu-open-test": [
+    {"delayMs": 500, "xRatio": 0.50, "yRatio": 0.03, "click": false, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.50, "yRatio": 0.03, "click": true, "button": "left"},
+    {"delayMs": 1000, "xRatio": 0.52, "yRatio": 0.16, "click": false, "button": "left"}
+  ],
+  "release-notes-menu-wrong-repo": [
+    {"delayMs": 450, "xRatio": 0.58, "yRatio": 0.04, "click": false, "button": "left"},
+    {"delayMs": 450, "xRatio": 0.58, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.52, "yRatio": 0.16, "click": false, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.52, "yRatio": 0.26, "click": false, "button": "left"}
+  ],
+  "titlebar-f5-pause-glyph-mismatch": [
+    {"delayMs": 500, "xRatio": 0.89, "yRatio": 0.045, "click": false, "button": "left"},
+    {"delayMs": 420, "xRatio": 0.89, "yRatio": 0.045, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.89, "yRatio": 0.045, "click": false, "button": "left"},
+    {"delayMs": 1000, "xRatio": 0.89, "yRatio": 0.045, "click": false, "button": "left"}
+  ],
+  "system-info-os-misclassification": [
+    {"delayMs": 500, "xRatio": 0.03, "yRatio": 0.89, "click": false, "button": "left"},
+    {"delayMs": 500, "xRatio": 0.03, "yRatio": 0.89, "click": true, "button": "left"},
+    {"delayMs": 850, "xRatio": 0.16, "yRatio": 0.88, "click": false, "button": "left"},
+    {"delayMs": 850, "xRatio": 0.24, "yRatio": 0.88, "click": false, "button": "left"}
+  ],
+  "quickaccess-view-event-unhandled": [
+    {"delayMs": 250, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 350, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+p"},
+    {"delayMs": 450, "xRatio": 0.52, "yRatio": 0.40, "text": "view "},
+    {"delayMs": 300, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 900, "xRatio": 0.08, "yRatio": 0.24, "click": false, "button": "left"}
+  ],
+  "debug-actions-event-handlers-missing": [
+    {"delayMs": 250, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 350, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 500, "xRatio": 0.52, "yRatio": 0.40, "text": "debug add configuration"},
+    {"delayMs": 300, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 900, "xRatio": 0.52, "yRatio": 0.30, "click": false, "button": "left"}
+  ],
+  "git-command-events-handler-gap": [
+    {"delayMs": 250, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 350, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 500, "xRatio": 0.52, "yRatio": 0.40, "text": "publish branch"},
+    {"delayMs": 300, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 900, "xRatio": 0.52, "yRatio": 0.30, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-t-transpose-unreachable": [
+    {"delayMs": 350, "xRatio": 0.52, "yRatio": 0.36, "click": true, "button": "left"},
+    {"delayMs": 400, "xRatio": 0.52, "yRatio": 0.36, "hotkey": "ctrl+t"},
+    {"delayMs": 900, "xRatio": 0.52, "yRatio": 0.18, "click": false, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.72, "yRatio": 0.30, "click": false, "button": "left"}
+  ],
+  "debug-breakpoint-submenu-unhandled-events": [
+    {"delayMs": 280, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 360, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "debug add conditional breakpoint"},
+    {"delayMs": 380, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 900, "xRatio": 0.52, "yRatio": 0.30, "click": false, "button": "left"}
+  ],
+  "menu-arrowright-submenu-hardcoded-recent": [
+    {"delayMs": 420, "xRatio": 0.47, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 520, "xRatio": 0.47, "yRatio": 0.04, "sendKeys": "{DOWN}"},
+    {"delayMs": 260, "xRatio": 0.47, "yRatio": 0.04, "sendKeys": "{DOWN}"},
+    {"delayMs": 260, "xRatio": 0.47, "yRatio": 0.04, "sendKeys": "{RIGHT}"},
+    {"delayMs": 900, "xRatio": 0.50, "yRatio": 0.28, "click": false, "button": "left"},
+    {"delayMs": 520, "xRatio": 0.50, "yRatio": 0.28, "click": true, "button": "left"},
+    {"delayMs": 800, "xRatio": 0.64, "yRatio": 0.28, "click": false, "button": "left"}
+  ],
+  "menu-open-view-test": [
+    {"delayMs": 420, "xRatio": 0.41, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.41, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.22, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-k-ctrl-c-conflict-test": [
+    {"delayMs": 300, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 360, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 560, "xRatio": 0.52, "yRatio": 0.40, "text": "ctrl+k ctrl+c"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.18, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-k-ctrl-c-centered-layout-conflict": [
+    {"delayMs": 280, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "add line comment"},
+    {"delayMs": 900, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+a"},
+    {"delayMs": 280, "xRatio": 0.52, "yRatio": 0.40, "sendKeys": "{BACKSPACE}"},
+    {"delayMs": 420, "xRatio": 0.52, "yRatio": 0.40, "text": "toggle centered layout"},
+    {"delayMs": 1100, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-k-ctrl-c-add-line-comment": [
+    {"delayMs": 280, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "add line comment"},
+    {"delayMs": 1100, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-alt-down-move-line-vs-terminal-split-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "down"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-shift-5-terminal-split-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "split terminal"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-alt-left-go-back-vs-terminal-split-left-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "go back"},
+    {"delayMs": 1000, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+a"},
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "sendKeys": "{BACKSPACE}"},
+    {"delayMs": 420, "xRatio": 0.52, "yRatio": 0.40, "text": "navigate split left"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-alt-right-go-forward-vs-terminal-split-right-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "go forward"},
+    {"delayMs": 1000, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+a"},
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "sendKeys": "{BACKSPACE}"},
+    {"delayMs": 420, "xRatio": 0.52, "yRatio": 0.40, "text": "navigate split right"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-alt-up-move-line-vs-terminal-split-up-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "up"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-alt-f12-breadcrumbs-vs-type-definition-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "f12"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-alt-f12-peek-definition-vs-find-all-references-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "alt+f12"},
+    {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-alt-b-subagent-vs-command-center-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "ctrl+alt+b"},
+    {"delayMs": 1200, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-alt-b-inline-blame-vs-secondary-sidebar-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "ctrl+alt+b"},
+    {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-alt-j-join-lines-vs-bookmarks-prev-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "ctrl+alt+j"},
+    {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "shortcut-ctrl-alt-r-recent-projects-vs-terminal-run-recent-command-conflict": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "ctrl+alt+r"},
+    {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "terminal-split-down-shortcut-label-malformed-ctrl-shift-quote": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 360, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "pressEnter": true},
+    {"delayMs": 1700, "xRatio": 0.33, "yRatio": 0.70, "click": true, "button": "left"},
+    {"delayMs": 420, "xRatio": 0.33, "yRatio": 0.70, "click": true, "button": "right"},
+    {"delayMs": 460, "xRatio": 0.33, "yRatio": 0.95, "click": true, "button": "right"},
+    {"delayMs": 460, "xRatio": 0.36, "yRatio": 0.84, "click": true, "button": "right"}
+  ],
+  "quickaccess-term-new-terminal-query-no-results": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "hotkey": "ctrl+p"},
+    {"delayMs": 520, "text": "term new terminal"},
+    {"delayMs": 1400, "xRatio": 0.60, "yRatio": 0.08, "click": false, "button": "left"}
+  ],
+  "quickaccess-help-query-ignored-no-filtering": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "hotkey": "ctrl+p"},
+    {"delayMs": 520, "text": "?term"},
+    {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
+  "editor-loading-skeleton-stuck-after-open-file": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 500, "xRatio": 0.52, "yRatio": 0.40, "text": "focus active editor group"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 600, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+p"},
+    {"delayMs": 350, "xRatio": 0.52, "yRatio": 0.40, "text": "src/components/TerminalGroupTabs.tsx"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 300, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 1800, "xRatio": 0.68, "yRatio": 0.16, "hotkey": "ctrl+g"},
+    {"delayMs": 280, "xRatio": 0.68, "yRatio": 0.16, "text": "926"},
+    {"delayMs": 300, "xRatio": 0.68, "yRatio": 0.16, "pressEnter": true},
+    {"delayMs": 800, "xRatio": 0.72, "yRatio": 0.22, "hotkey": "ctrl+f"},
+    {"delayMs": 320, "xRatio": 0.72, "yRatio": 0.22, "text": "Ctrl+Shift+\""},
+    {"delayMs": 380, "xRatio": 0.72, "yRatio": 0.22, "pressEnter": true},
+    {"delayMs": 1500, "xRatio": 0.74, "yRatio": 0.30, "click": false, "button": "left"}
+  ],
+  "editor-loading-stuck-terminalgrouptabs-file-open": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 500, "xRatio": 0.52, "yRatio": 0.40, "text": "focus active editor group"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 600, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+p"},
+    {"delayMs": 350, "xRatio": 0.52, "yRatio": 0.40, "text": "src/components/TerminalGroupTabs.tsx"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 300, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 1800, "xRatio": 0.68, "yRatio": 0.16, "hotkey": "ctrl+g"},
+    {"delayMs": 280, "xRatio": 0.68, "yRatio": 0.16, "text": "926"},
+    {"delayMs": 300, "xRatio": 0.68, "yRatio": 0.16, "pressEnter": true},
+    {"delayMs": 1500, "xRatio": 0.74, "yRatio": 0.30, "click": false, "button": "left"}
+  ],
+  "menubar-ctrl-t-shortcut-conflict-transpose-vs-go-symbol": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 420, "xRatio": 0.27, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.30, "yRatio": 0.49, "click": false, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.47, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 1000, "xRatio": 0.51, "yRatio": 0.19, "click": false, "button": "left"}
+  ],
+  "menubar-ctrl-shift-r-shortcut-conflict-refactor-vs-toggle-repl": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 420, "xRatio": 0.27, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 950, "xRatio": 0.32, "yRatio": 0.56, "click": false, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.39, "yRatio": 0.04, "click": true, "button": "left"},
+    {"delayMs": 1000, "xRatio": 0.44, "yRatio": 0.41, "click": false, "button": "left"}
+  ],
+  "worktree-open-new-window-event-unhandled": [
+    {"delayMs": 420, "xRatio": 0.028, "yRatio": 0.28, "click": true, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.028, "yRatio": 0.28, "click": true, "button": "left"},
+    {"delayMs": 900, "xRatio": 0.14, "yRatio": 0.10, "click": false, "button": "left"},
+    {"delayMs": 650, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 520, "xRatio": 0.52, "yRatio": 0.40, "text": "list worktrees"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 1300, "xRatio": 0.14, "yRatio": 0.35, "click": true, "button": "left"},
+    {"delayMs": 700, "xRatio": 0.12, "yRatio": 0.65, "click": true, "button": "left"},
+    {"delayMs": 1600, "xRatio": 0.12, "yRatio": 0.65, "click": false, "button": "left"}
+  ],
+  "extensions-show-running-event-unhandled": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 360, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},
+    {"delayMs": 560, "xRatio": 0.52, "yRatio": 0.40, "text": "show running extensions"},
+    {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "pressEnter": true},
+    {"delayMs": 1200, "xRatio": 0.14, "yRatio": 0.12, "click": false, "button": "left"}
+  ],
+  "quickchat-open-full-chat-event-unhandled": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+i"},
+    {"delayMs": 1200, "xRatio": 0.90, "yRatio": 0.20, "click": false, "button": "left"},
+    {"delayMs": 420, "xRatio": 0.90, "yRatio": 0.20, "click": true, "button": "left"},
+    {"delayMs": 1400, "xRatio": 0.84, "yRatio": 0.50, "click": false, "button": "left"}
+  ]
+}

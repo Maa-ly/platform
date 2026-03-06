@@ -1,0 +1,48 @@
+{
+  "date": "2026-03-05",
+  "repositories": {
+    "kid": {
+      "invalid": 0,
+      "remaining_to_target": 0,
+      "target": 1,
+      "total_submitted": 1,
+      "valid": 1
+    },
+    "kid-2": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "kid-3": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "marvin": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "marvin-2": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "marvin-3": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    }
+  },
+  "updated_at": "2026-03-05T16:10:22.171519+00:00"
+}

@@ -1,0 +1,158 @@
+runtime:
+  state_dir: .audit_state_keeper_live_full_retry_now
+  poll_interval_seconds: 120
+  valid_target_per_repo: 1
+  stop_when_targets_met: true
+submission:
+  title_template: '[Bug][alpha]{title}'
+  issue_repo: PlatformNetwork/bounty-challenge
+external_dedup:
+  repo: https://github.com/PlatformNetwork/bounty-challenge/issues
+  token_env: GH_EXTERNAL_DEDUP_TOKEN
+proof:
+  allowed_image_extensions:
+  - .png
+  - .jpg
+  - .jpeg
+  - .gif
+  allowed_video_extensions:
+  - .mp4
+  - .mov
+  - .webm
+  upload_cmd: PROOF_UPLOAD_BACKEND=github_repo PROOF_GH_TOKEN=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
+    PROOF_GH_REPO=kidinwhitegati/proof-media PROOF_GIST_BACKUP=1 python3 ./detectors/upload_proof_catbox.py
+    {file_path}
+  auto_capture_cmd: CORTEX_ALLOW_WSL_HOST_CAPTURE=1 CORTEX_FORCE_WSL_HOST_VIDEO=1
+    CORTEX_CAPTURE_VIDEO_SECONDS=8 CORTEX_CAPTURE_EXTRA_SHOTS=1 CORTEX_CAPTURE_VIDEO_FPS=20
+    CORTEX_WSL_VIDEO_ACTIONS_FILE=./detectors/cortex_wsl_video_actions.json CORTEX_APP_NAME='Cortex
+    IDE' CORTEX_WINDOW_TITLE='Cortex IDE' CORTEX_LAUNCH_CMD='CC=gcc npm run tauri:dev'
+    CORTEX_LAUNCH_TIMEOUT=1200 CORTEX_STRICT_FULL_GUI=1 CORTEX_REQUIRE_ACTION_CLICK=1
+    python3 ./detectors/cortex_gui_capture.py --repo-path {repo_path} --finding-id
+    {finding_id} --file {evidence_file} --line {evidence_line}
+  screenshot_example_url: https://github.com/PlatformNetwork/bounty-challenge/issues/22537
+  video_example_url: https://github.com/PlatformNetwork/bounty-challenge/issues/22534
+  banned_format_url: https://github.com/PlatformNetwork/bounty-challenge/issues/22375#issuecomment-3983776205
+repositories:
+- name: live-1
+  github_name: kidinwhitegati
+  token: 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
+- name: live-2
+  github_name: kidinwhitegati
+  token: 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
+- name: live-3
+  github_name: kidinwhitegati
+  token: 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
+- name: live-4
+  github_name: kidinwhitegati
+  token: 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
+- name: live-5
+  github_name: kidinwhitegati
+  token: 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
+- name: live-6
+  github_name: kidinwhitegati
+  token: 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
+prompts:
+- id: cortex-visible-gui-live
+  severity: critical
+  detector_cmd: python3 ./detectors/cortex_visible_gui_bugs_detector.py
+  prompt: 'Validate visible Cortex GUI mismatches where menu labels or primary actions
+    do
+
+    not match the behavior users see after clicking in the native app.'
+- id: cortex-event-routing-live
+  severity: critical
+  detector_cmd: python3 ./detectors/cortex_event_routing_detector.py
+  prompt: 'Validate Cortex command and quick-access event routing bugs where visible
+    UI
+
+    actions dispatch events with no production handler.'
+- id: cortex-alpha-hunt
+  severity: critical
+  detector_cmd: python3 ./detectors/cortex_static_triage_detector.py
+  prompt: "You are an expert security researcher and systems engineer tasked with\
+    \ finding critical bugs in the Cortex IDE during its alpha phase.\n\nThis is a\
+    \ Tauri v2 application with a TypeScript/SolidJS frontend and a Rust backend,\
+    \ featuring deep AI integration and agent orchestration.\n\n## PROJECT CONTEXT\
+    \ & ARCHITECTURE\n\nCortex IDE is an AI-native IDE built for agent orchestration.\
+    \ Key components to understand:\n\n- Core Stack: Tauri v2 (Rust backend) + Vite\
+    \ + TypeScript + SolidJS.\n- Key Systems: Multi-Agent Execution Engine, WASM Plugin\
+    \ System, LSP/DAP clients, Integrated Terminal (xterm.js), Git integration, MCP\
+    \ Server.\n- Communication: Inter-process communication (IPC) between the frontend\
+    \ and Rust backend.\n- State: Security relies on proper sandboxing, permission\
+    \ systems, and input validation across this boundary.\n\n## PRIMARY BUG CATEGORIES\
+    \ & FOCUS AREAS\n\n### 1. Tauri & IPC Security (Critical)\n\n- Command Exposure:\
+    \ Review all tauri::command functions in src-tauri/. Look for commands that lack\
+    \ proper permission checks or expose dangerous system functionality to the frontend.\n\
+    - Path Traversal in FS Commands: Examine file read/write operations. Can the frontend\
+    \ request paths with ../ to escape the workspace or access system files? Check\
+    \ all commands using std::fs or Tauri's path resolver.\n- Shell Injection: The\
+    \ terminal and task runner may spawn processes. Look for command construction\
+    \ using user input (from workspace files, AI output, or UI) without proper escaping\
+    \ or using Command::arg() safely.\n- Unvalidated IPC Payloads: Large JSON payloads\
+    \ could cause DoS. Check for serialization vulnerabilities or missing size limits.\n\
+    \n### 2. AI Agent & Tool System Exploits\n\n- Agent Tool Sandbox Escape: The agent\
+    \ tool system (Agent Tool System & Sandboxing) must restrict file access, network\
+    \ requests, and command execution. Can a malicious agent or prompt trick the system\
+    \ into:\n  - Reading/writing files outside the workspace?\n  - Making requests\
+    \ to internal network services (SSRF)?\n  - Executing arbitrary shell commands?\n\
+    - Permission Bypass: Review the user approval flow for destructive actions. Can\
+    \ it be spammed, bypassed, or confused?\n- Context Injection: AI completions/chat\
+    \ might generate content that is directly used in shell commands or file paths.\
+    \ Look for ways to inject special characters or command separators.\n\n### 3.\
+    \ WASM Plugin System Vulnerabilities\n\n- Sandbox Escape: The extension system\
+    \ uses wasmtime. Investigate host function implementations. Can a malicious WASM\
+    \ plugin:\n  - Access the filesystem or network beyond its granted permissions?\n\
+    \  - Cause a panic in the host?\n  - Exhaust resources (CPU, memory, file handles)?\n\
+    - Plugin Signing Bypass: Plugins are signed with ed25519. Is signature verification\
+    \ enforced? Can an attacker load an unsigned plugin?\n- Permission Granularity:\
+    \ The system has \"18+ granular permissions\". Test if a plugin can perform actions\
+    \ without the required permission.\n\n### 4. Integrated Terminal & Shell Integration\n\
+    \n- Command Injection via OSC Sequences: The terminal uses shell integration (OSC\
+    \ 633). Can malicious output (e.g., from curl or a project's build script) inject\
+    \ escape sequences that execute commands?\n- CWD Tracking Manipulation: Can the\
+    \ reported current working directory be faked to trick the IDE into performing\
+    \ operations in the wrong location?\n- Environment Variable Leakage: Does the\
+    \ terminal expose sensitive environment variables (like API keys) to the AI or\
+    \ other agents?\n\n### 5. Language Server & Debugger Clients\n\n- LSP/DAP Spoofing:\
+    \ The IDE auto-downloads and communicates with language servers/debug adapters.\
+    \ Can a malicious workspace config trick it into connecting to a rogue LSP server\
+    \ that sends arbitrary commands?\n- Unsafe Deserialization: LSP/DAP messages are\
+    \ JSON. Review the parsing logic for potential panics or unexpected type handling.\n\
+    - Command Injection in Debug Adapters: Debug adapters may launch programs. Check\
+    \ how arguments are constructed.\n\n### 6. Git Integration & Source Control\n\n\
+    - Git Command Injection: Git operations use the git binary. Are all branch names,\
+    \ commit messages, and file paths properly sanitized before being passed to git?\
+    \ A malicious repo could have a branch named --help or similar.\n- Submodule Exploits:\
+    \ Git submodules can point to malicious URLs. Does the IDE handle them safely?\n\
+    - Credential Exposure: Are Git credentials or tokens ever logged or exposed in\
+    \ error messages?\n\n### 7. MCP Server & Remote Development\n\n- MCP Tool Abuse:\
+    \ The MCP server exposes workspace tools. Can an attacker who can connect to the\
+    \ server (e.g., via a malicious web page) read/write files?\n- SSH Remote Exploits:\
+    \ The remote development feature uses SSH. Review private key handling and host\
+    \ key verification. Can a malicious server trick the client?\n- Port Forwarding\
+    \ Security: Can a forwarded port be accessed by other applications on the user's\
+    \ machine without authorization?\n\n### 8. Performance & Resource Exhaustion\n\
+    \n- Unbounded AI Completions: Can an AI prompt cause the IDE to generate an infinite\
+    \ stream of completions, leading to memory exhaustion?\n- Indexing Bombs: The\
+    \ codebase indexer processes all files. Can a specially crafted file (e.g., with\
+    \ extremely long lines or recursive symlinks) cause a hang or crash?\n- WebSocket\
+    \ Flooding: Collaboration features use WebSockets. Can an attacker flood the connection\
+    \ with messages?\n\n### 9. Installation & Update Flow (Even though no binaries\
+    \ are published, review the build/update logic)\n\n- Dependency Confusion: The\
+    \ build system may download LSP servers, DAP adapters, or other tools. Are these\
+    \ downloads over HTTPS with integrity checks?\n- Build Script Injection: Review\
+    \ tauri.conf.json and build scripts for unsafe usage of environment variables.\n\
+    \nYou are a senior bug bounty triager auditing a local codebase.\n\nGoal:\nFind\
+    \ user-impacting, reproducible bugs similar to \"wrong system info / wrong report\
+    \ target / dialog lifecycle bugs\" in a Tauri + SolidJS desktop app.\n\nScope:\n\
+    - Frontend: src/** (SolidJS, quick access, dialogs, feedback/reporting flows)\n\
+    - Backend: src-tauri/src/** (Tauri commands, system specs, telemetry/reporting\
+    \ helpers)\n\nFocus on bug classes:\n1) Incorrect/misleading system information\
+    \ shown to users or sent in bug reports\n2) Wrong routing/URLs/targets in \"Report\
+    \ Bug\" or issue-report flows\n3) Event/listener/timer lifecycle bugs (duplicate\
+    \ subscriptions, leaks, repeated handlers)\n4) Label/field mismatches (UI says\
+    \ one thing, implementation does another)\n5) Regressions where expected provider/feature\
+    \ is unreachable from UI\n\nRules:\n- Only report issues with concrete evidence\
+    \ in code.\n- No style/lint nitpicks.\n- No speculative security claims without\
+    \ code path proof.\n- Trace full flow (UI trigger -> helper -> backend command\
+    \ where relevant)."

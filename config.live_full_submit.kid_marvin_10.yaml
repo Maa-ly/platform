@@ -1,0 +1,75 @@
+runtime:
+  state_dir: .audit_state_keeper_live_kid_marvin_10
+  poll_interval_seconds: 120
+  valid_target_per_repo: 10
+  stop_when_targets_met: true
+
+submission:
+  title_template: "[Bug][alpha]{title}"
+  issue_repo: "PlatformNetwork/bounty-challenge"
+
+external_dedup:
+  repo: "https://github.com/PlatformNetwork/bounty-challenge/issues"
+  token_env: GH_EXTERNAL_DEDUP_TOKEN
+
+proof:
+  allowed_image_extensions: [".png", ".jpg", ".jpeg", ".gif"]
+  allowed_video_extensions: [".mp4", ".mov", ".webm"]
+  upload_cmd: "PROOF_UPLOAD_BACKEND=github_repo PROOF_GH_TOKEN=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 PROOF_GH_REPO=marvinayisi/todolist2 PROOF_GIST_BACKUP=1 python3 ./detectors/upload_proof_catbox.py {file_path}"
+  auto_capture_cmd: "python3 ./detectors/cortex_process_cleanup.py >/dev/null 2>&1 || true; CORTEX_ALLOW_WSL_HOST_CAPTURE=1 CORTEX_FORCE_WSL_HOST_VIDEO=0 CORTEX_CAPTURE_VIDEO_SECONDS=10 CORTEX_CAPTURE_EXTRA_SHOTS=1 CORTEX_CAPTURE_VIDEO_FPS=20 CORTEX_WSL_VIDEO_ACTIONS_FILE=./detectors/cortex_wsl_video_actions.json CORTEX_APP_NAME='Cortex IDE' CORTEX_WINDOW_TITLE='Cortex IDE' CORTEX_LAUNCH_CMD='CC=gcc npm run tauri:dev' CORTEX_LAUNCH_TIMEOUT=300 CORTEX_STRICT_FULL_GUI=1 CORTEX_REQUIRE_ACTION_CLICK=1 CORTEX_REQUIRE_OPEN_WORKSPACE=1 python3 ./detectors/cortex_gui_capture.py --repo-path {repo_path} --finding-id {finding_id} --file {evidence_file} --line {evidence_line}"
+  screenshot_example_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22537"
+  video_example_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22534"
+  banned_format_url: "https://github.com/PlatformNetwork/bounty-challenge/issues/22375#issuecomment-3983776205"
+
+repositories:
+  - name: kid
+    github_name: kidinwhitegati
+    token: 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
+  - name: marvin
+    github_name: marvinayisi
+    token: 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
+  - name: kid
+    github_name: kidinwhitegati
+    token: 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
+  - name: marvin
+    github_name: marvinayisi
+    token: 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
+  - name: kid
+    github_name: kidinwhitegati
+    token: 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
+  - name: marvin
+    github_name: marvinayisi
+    token: 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
+
+prompts:
+  - id: cortex-visible-gui-live
+    severity: critical
+    detector_cmd: "python3 ./detectors/cortex_visible_gui_bugs_detector.py"
+    prompt: |-
+      Validate visible Cortex GUI mismatches where menu labels or primary actions
+      do not match behavior after reproducing the flow in the native app.
+
+  - id: cortex-event-routing-live
+    severity: critical
+    detector_cmd: "python3 ./detectors/cortex_event_routing_detector.py"
+    prompt: |-
+      Validate Cortex command and quick-access event-routing bugs where visible UI
+      actions dispatch events with no production handler.
+
+  - id: cortex-editor-loading-stuck
+    severity: critical
+    detector_cmd: "python3 ./detectors/cortex_editor_loading_stuck_detector.py"
+    prompt: |-
+      Validate reproducible editor loading states that do not recover after opening files.
+
+  - id: cortex-terminalgroup-loading-stuck
+    severity: critical
+    detector_cmd: "python3 ./detectors/cortex_terminalgroup_loading_stuck_detector.py"
+    prompt: |-
+      Validate reproducible loading-state regressions tied to TerminalGroupTabs file open flow.
+
+  - id: cortex-quickaccess-term-new-terminal
+    severity: critical
+    detector_cmd: "python3 ./detectors/cortex_terminal_quickaccess_new_terminal_detector.py"
+    prompt: |-
+      Validate Ctrl+P quick-open routing for `term ` prefixed terminal actions.

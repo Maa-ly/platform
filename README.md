@@ -39,6 +39,16 @@ export GH_TOKEN_5=...
 export GH_TOKEN_6=...
 # Optional:
 export GH_EXTERNAL_DEDUP_TOKEN=...
+# Required for real github.com/user-attachments proof uploads:
+export PROOF_GH_COOKIE='user_session=...; __Host-user_session_same_site=...'
+# Optional path variant:
+# export PROOF_GH_COOKIE_FILE=~/.config/proof/github_cookie.txt
+# Optional proof target override (owner/repo). If omitted, uploader infers from source repo git remote.
+export PROOF_GH_REPO=your-user/your-proof-repo
+# Optional if you want to pin repository id directly:
+# export PROOF_GH_REPO_ID=123456789
+# Optional gist token override (defaults to PROOF_GH_TOKEN / GH token):
+# export PROOF_GIST_TOKEN=...
 ```
 
 Repository config now only needs:
@@ -100,6 +110,9 @@ Auto GUI proof capture:
 - When `tauri:dev` launch is configured, macOS capture is pinned to the `cortex-gui` process (strict process check).
 - Capture uses the target app front window region (not full-screen), so unrelated windows are excluded.
 - Capture now runs per-finding UI navigation hooks (Docs/Quick Access flows) before screenshot.
+- In WSL host mode, video capture can run per-bug mouse/click profiles from `detectors/cortex_wsl_video_actions.json` keyed by `finding_id`.
+- WSL host video capture also emits `<finding>.preview.gif` (inline motion preview) and `<finding>.cursor.mp4` (cursor-visualized playback) so reports still show pointer movement when GitHub strips `<video>` tags.
+- Submission rendering now selects a single inline proof per bug (screenshot for static bugs, GIF motion preview for interaction/event-routing bugs) and omits visible artifact URL/link lines.
 - If the app display name differs, set `CORTEX_APP_NAME` (default: `Cortex IDE`).
 - macOS requirements for `cortex_gui_capture.py`:
   - Run in an active desktop session (not headless/SSH-only shell).
@@ -116,6 +129,10 @@ Auto GUI proof capture:
 - In strict mode (default), capture fails fast if it cannot reach the target UI state and cannot open evidence in Cortex.
 - For local troubleshooting only, set `CORTEX_ENABLE_UNVERIFIED_UI_NAV=1` to allow unverified UI navigation captures.
 - Note: local captures still require `proof.upload_cmd` to publish artifacts as URLs before issue submission.
+- Default proof upload backend is `github_attachment` (real `github.com/user-attachments/...` URLs).
+- `github_attachment` requires `PROOF_GH_COOKIE` (or `PROOF_GH_COOKIE_FILE`).
+- If `PROOF_GH_REPO_ID` is unset, uploader resolves repo id from `PROOF_GH_REPO` or the audited checkout remote.
+- When `PROOF_GIST_BACKUP=1` (default in configs), uploader also creates a bracketed `[Gist backup](...)` link.
 
 ## How Dedup Works
 
@@ -141,6 +158,7 @@ Auto GUI proof capture:
 - Proof must reflect the real bug in the target app native GUI.
 - Supported extensions are configured under `proof.allowed_image_extensions` and `proof.allowed_video_extensions`.
 - Local files require `proof.upload_cmd` that returns a public URL.
+- Default uploader path uses real GitHub attachments plus bracketed gist backup.
 - Reference styles:
   - Screenshot format: <https://github.com/PlatformNetwork/bounty-challenge/issues/22537>
   - Video format: <https://github.com/PlatformNetwork/bounty-challenge/issues/22534>

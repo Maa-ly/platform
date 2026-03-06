@@ -1,0 +1,48 @@
+{
+  "date": "2026-03-04",
+  "repositories": {
+    "live-1": {
+      "invalid": 1,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 1,
+      "valid": 0
+    },
+    "live-2": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "live-3": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "live-4": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "live-5": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    },
+    "live-6": {
+      "invalid": 0,
+      "remaining_to_target": 1,
+      "target": 1,
+      "total_submitted": 0,
+      "valid": 0
+    }
+  },
+  "updated_at": "2026-03-04T23:24:00.065771+00:00"
+}

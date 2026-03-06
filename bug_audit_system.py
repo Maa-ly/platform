@@ -8,8 +8,10 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import math
 import mimetypes
 import os
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -27,7 +29,16 @@ GITHUB_API_BASE = "https://api.github.com"
 DEFAULT_EXTERNAL_REPO = "PlatformNetwork/bounty-challenge"
 DEFAULT_DAILY_VALID_TARGET = 25
 DEFAULT_POLL_SECONDS = 120
-INVALID_LABELS = {"invalid"}
+INVALID_LABELS = {"invalid", "duplicate", "duplicated"}
+
+LOW_CONFIDENCE_FINDING_ID_PREFIXES: Tuple[str, ...] = (
+    "shortcut-",
+    "menubar-ctrl-",
+)
+LOW_CONFIDENCE_FINDING_IDS = {
+    "titlebar-f5-pause-glyph-mismatch",
+    "terminal-split-down-shortcut-label-malformed-ctrl-shift-quote",
+}
 
 
 class ConfigError(RuntimeError):
@@ -70,6 +81,27 @@ def sha256_file(path: Path) -> str:
 def is_git_url(source: str) -> bool:
     lowered = source.lower()
     return lowered.startswith("https://") or lowered.startswith("http://") or lowered.startswith("git@")
+
+
+def normalize_repo_ref(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("http://") or raw.startswith("https://"):
+        parsed = urlparse(raw)
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+        return raw
+
+    if raw.startswith("github.com/"):
+        raw = raw[len("github.com/") :]
+
+    parts = [p for p in raw.strip("/").split("/") if p]
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return raw
 
 
 def json_dump(path: Path, payload: Dict[str, Any]) -> None:
@@ -160,6 +192,7 @@ class ProofArtifact:
     public_url: str
     media_type: str
     sha256: Optional[str]
+    backup_url: Optional[str] = None
 
 
 class ConfigLoader:
@@ -183,8 +216,10 @@ class ConfigLoader:
         repositories = self._parse_repositories(raw.get("repositories", []), submission.issue_repo)
 
         external = raw.get("external_dedup", {}) or {}
-        external_repo = external.get("repo", DEFAULT_EXTERNAL_REPO)
+        external_repo = normalize_repo_ref(str(external.get("repo", DEFAULT_EXTERNAL_REPO)))
         external_token_env = external.get("token_env")
+        if "/" not in external_repo:
+            raise ConfigError("external_dedup.repo must be in 'owner/repo' format or GitHub repo/issues URL")
 
         if len(repositories) != 6:
             raise ConfigError("Exactly 6 repositories must be configured")
@@ -319,7 +354,7 @@ class ConfigLoader:
         if not isinstance(raw_proof, dict):
             raise ConfigError("proof must be a mapping")
 
-        image_ext = raw_proof.get("allowed_image_extensions", [".png", ".jpg", ".jpeg"])
+        image_ext = raw_proof.get("allowed_image_extensions", [".png", ".jpg", ".jpeg", ".gif"])
         video_ext = raw_proof.get("allowed_video_extensions", [".mp4", ".mov", ".webm"])
         if not isinstance(image_ext, list) or not isinstance(video_ext, list):
             raise ConfigError("proof extension lists must be arrays")
@@ -368,13 +403,13 @@ class ConfigLoader:
         title_template = str(
             raw_submission.get("title_template", "[Bug][alpha]{title}")
         ).strip()
-        issue_repo = str(raw_submission.get("issue_repo", DEFAULT_EXTERNAL_REPO)).strip()
+        issue_repo = normalize_repo_ref(str(raw_submission.get("issue_repo", DEFAULT_EXTERNAL_REPO)).strip())
         if not title_template:
             raise ConfigError("submission.title_template cannot be empty")
         if "{title}" not in title_template:
             raise ConfigError("submission.title_template must contain {title}")
         if "/" not in issue_repo:
-            raise ConfigError("submission.issue_repo must be in 'owner/repo' format")
+            raise ConfigError("submission.issue_repo must be in 'owner/repo' format or GitHub repo/issues URL")
         return SubmissionConfig(title_template=title_template, issue_repo=issue_repo)
 
 
@@ -399,18 +434,17 @@ class ConfigReloader:
 class GitHubClient:
     """Small wrapper around GitHub REST API."""
 
-    def __init__(self, token: str):
-        if not token:
-            raise ValueError("GitHub token is required")
+    def __init__(self, token: str = ""):
+        normalized_token = token.strip()
         self._session = requests.Session()
-        self._session.headers.update(
-            {
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "audit-bot/1.0",
-            }
-        )
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "audit-bot/1.0",
+        }
+        if normalized_token:
+            headers["Authorization"] = f"Bearer {normalized_token}"
+        self._session.headers.update(headers)
 
     def request(
         self,
@@ -723,7 +757,27 @@ class ExternalDedupChecker:
 
     def __init__(self, github_client: GitHubClient, repository: str) -> None:
         self._client = github_client
+        self._fallback_client: Optional[GitHubClient] = None
         self._repository = repository
+        self._search_cache: Dict[Tuple[str, int], Dict[str, Any]] = {}
+
+    def _search_issues_cached(self, query: str, per_page: int) -> Dict[str, Any]:
+        key = (query, int(per_page))
+        cached = self._search_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            payload = self._client.search_issues(query, per_page=per_page)
+        except GitHubAPIError as exc:
+            message = str(exc).lower()
+            rate_limited = "api rate limit exceeded" in message and "/search/issues" in message
+            if not rate_limited:
+                raise
+            if self._fallback_client is None:
+                self._fallback_client = GitHubClient("")
+            payload = self._fallback_client.search_issues(query, per_page=per_page)
+        self._search_cache[key] = payload
+        return payload
 
     def is_duplicate(self, candidate: BugCandidate, fingerprint: str) -> Tuple[bool, Optional[str]]:
         title_query = f'repo:{self._repository} is:issue "{candidate.title}"'
@@ -732,22 +786,391 @@ class ExternalDedupChecker:
             return True, issue_url
 
         fp_prefix = fingerprint[:16]
-        fp_query = f'repo:{self._repository} is:issue "{fp_prefix}"'
-        if self._has_match(fp_query):
-            issue_url = self._first_issue_url(fp_query)
-            return True, issue_url
+        # Fingerprint-prefix search is only reliable when the candidate text itself
+        # includes the fingerprint marker. Otherwise, short hex prefixes can collide.
+        candidate_text = self._candidate_text(candidate)
+        if fp_prefix and fp_prefix in candidate_text:
+            fp_query = f'repo:{self._repository} is:issue "{fp_prefix}"'
+            if self._has_match(fp_query):
+                issue_url = self._first_issue_url(fp_query)
+                return True, issue_url
+
+        # Optional detector-provided semantic hints for stronger duplicate checks.
+        # Example: title wording changed but behavior is already reported.
+        for hint in self._dedup_hints(candidate)[:3]:
+            for query in self._hint_queries(hint):
+                issue_url = self._first_issue_url_for_hint(query, hint)
+                if issue_url:
+                    return True, issue_url
+
+        if self._should_skip_strict_term_fallback(candidate):
+            return False, None
+
+        # Strict fallback: search using high-signal terms across title/description/steps
+        # and treat strong token overlap as duplicate even if wording differs.
+        strict_terms = self._strict_terms(candidate)
+        if strict_terms:
+            for query in self._strict_queries(strict_terms):
+                issue_url = self._first_issue_url_for_terms(query, strict_terms)
+                if issue_url:
+                    return True, issue_url
 
         return False, None
 
     def _has_match(self, query: str) -> bool:
-        results = self._client.search_issues(query, per_page=1)
-        return int(results.get("total_count", 0)) > 0
+        for scoped_query in self._state_queries(query):
+            results = self._search_issues_cached(scoped_query, per_page=1)
+            if int(results.get("total_count", 0)) > 0:
+                return True
+        return False
 
     def _first_issue_url(self, query: str) -> Optional[str]:
-        results = self._client.search_issues(query, per_page=1)
-        items = results.get("items", [])
-        if items:
+        for scoped_query in self._state_queries(query):
+            results = self._search_issues_cached(scoped_query, per_page=1)
+            items = results.get("items", [])
+            if items:
+                return items[0].get("html_url")
+        return None
+
+    def _state_queries(self, query: str) -> List[str]:
+        query_text = query.strip()
+        lowered = query_text.lower()
+        if "is:open" in lowered or "is:closed" in lowered:
+            return [query_text]
+        # Be explicit and strict: check both states independently.
+        return [f"{query_text} is:open", f"{query_text} is:closed"]
+
+    def _dedup_hints(self, candidate: BugCandidate) -> List[str]:
+        raw_hints = candidate.raw.get("dedup_hints", [])
+        if isinstance(raw_hints, str):
+            raw_hints = [raw_hints]
+        if not isinstance(raw_hints, list):
+            raw_hints = []
+        out: List[str] = []
+        seen: set[str] = set()
+        for item in raw_hints:
+            hint = str(item).strip()
+            if not hint:
+                continue
+            if hint in seen:
+                continue
+            seen.add(hint)
+            out.append(hint)
+
+        # Add explicit event-name hints from candidate text; these are often the
+        # most stable duplicate signal for GUI event-routing bugs.
+        for token in self._event_tokens(self._candidate_text(candidate)):
+            if token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+
+        return out
+
+    def _candidate_text(self, candidate: BugCandidate) -> str:
+        return "\n".join(
+            [
+                candidate.title,
+                candidate.description,
+                " ".join(candidate.reproduction_steps),
+                str(candidate.raw.get("actual_behavior", "")),
+                str(candidate.raw.get("expected_behavior", "")),
+                str(candidate.raw.get("additional_context", "")),
+            ]
+        )
+
+    def _should_skip_strict_term_fallback(self, candidate: BugCandidate) -> bool:
+        text = self._candidate_text(candidate).lower()
+        # Preserve distinction between '?' help-prefix routing bugs and generic
+        # `term ` quick-open bugs that otherwise share broad tokens.
+        return (
+            "`?`" in text
+            or "question prefix" in text
+            or "?term" in text
+            or "help provider" in text
+        )
+
+    def _event_tokens(self, text: str) -> List[str]:
+        pattern = re.compile(r"\b[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9_.-]*\b", re.IGNORECASE)
+        allowed_prefixes = {
+            "activity",
+            "activitybar",
+            "agent",
+            "ai",
+            "auth",
+            "chat",
+            "command",
+            "cortex",
+            "debug",
+            "dev",
+            "editor",
+            "encoding",
+            "explorer",
+            "extension",
+            "extensions",
+            "feedback",
+            "file",
+            "folder",
+            "formatter",
+            "git",
+            "help",
+            "i18n",
+            "icon-theme",
+            "issue-reporter",
+            "keybindings",
+            "keyboard-shortcuts",
+            "language",
+            "layout",
+            "local-history",
+            "merge-editor",
+            "notification",
+            "open",
+            "output",
+            "plugin",
+            "search",
+            "settings",
+            "task",
+            "tasks",
+            "terminal",
+            "testing",
+            "view",
+            "workspace",
+        }
+        tokens: List[str] = []
+        seen: set[str] = set()
+        for match in pattern.finditer(text or ""):
+            token = match.group(0).lower()
+            if "://" in token or "/" in token:
+                continue
+            prefix, suffix = token.split(":", 1)
+            if prefix not in allowed_prefixes:
+                continue
+            if "." in prefix:
+                continue
+            if suffix.isdigit() or len(suffix) < 3:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+        return tokens
+
+    def _hint_queries(self, hint: str) -> List[str]:
+        queries: List[str] = []
+        seen: set[str] = set()
+
+        def add(query: str) -> None:
+            q = query.strip()
+            if not q or q in seen:
+                return
+            seen.add(q)
+            queries.append(q)
+
+        event_tokens = self._event_tokens(hint)
+        if event_tokens:
+            quoted = " ".join(f'"{token}"' for token in event_tokens[:4])
+            add(f"repo:{self._repository} is:issue {quoted}")
+
+        hint_tokens = self._hint_tokens(hint)
+        if hint_tokens:
+            high_signal = [token for token in hint_tokens if len(token) >= 5]
+            if high_signal:
+                quoted = " ".join(f'"{token}"' for token in high_signal[:6])
+                add(f"repo:{self._repository} is:issue {quoted}")
+        # Keep hint-based dedup lightweight to avoid exhausting GitHub Search API.
+        # A raw-text fallback query is still included when no structured tokens exist.
+        if not queries:
+            add(f"repo:{self._repository} is:issue {hint}")
+        return queries[:2]
+
+    def _hint_tokens(self, text: str) -> List[str]:
+        stop = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "when",
+            "then",
+            "than",
+            "while",
+            "where",
+            "have",
+            "has",
+            "had",
+            "was",
+            "were",
+            "are",
+            "is",
+            "to",
+            "of",
+            "in",
+            "on",
+            "or",
+            "a",
+            "an",
+            "as",
+            "by",
+        }
+        tokens = re.findall(r"[a-z0-9]+", text.lower())
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            if len(token) < 3 or token in stop:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            deduped.append(token)
+        return deduped
+
+    def _first_issue_url_for_hint(self, query: str, hint: str) -> Optional[str]:
+        items: List[Dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for scoped_query in self._state_queries(query):
+            results = self._search_issues_cached(scoped_query, per_page=10)
+            for item in results.get("items", []) or []:
+                url = str(item.get("html_url", "")).strip()
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                items.append(item)
+        if not items:
+            return None
+
+        hint_event_tokens = self._event_tokens(hint)
+        if hint_event_tokens:
+            for item in items:
+                title = str(item.get("title", ""))
+                body = str(item.get("body", ""))
+                issue_text = f"{title}\n{body}".lower()
+                if all(token in issue_text for token in hint_event_tokens):
+                    return item.get("html_url")
+
+        hint_tokens = self._hint_tokens(hint)
+        if not hint_tokens:
             return items[0].get("html_url")
+
+        needed = max(3, min(10, int(math.ceil(len(hint_tokens) * 0.72))))
+        rare_hint_tokens = [t for t in hint_tokens if len(t) >= 7]
+        for item in items:
+            title = str(item.get("title", ""))
+            body = str(item.get("body", ""))
+            issue_tokens = set(self._hint_tokens(f"{title}\n{body}"))
+            matched = sum(1 for t in hint_tokens if t in issue_tokens)
+            if matched < needed:
+                continue
+            if rare_hint_tokens:
+                rare_matched = sum(1 for t in rare_hint_tokens if t in issue_tokens)
+                if rare_matched == 0:
+                    continue
+            return item.get("html_url")
+        return None
+
+    def _strict_terms(self, candidate: BugCandidate) -> List[str]:
+        text_parts = [
+            candidate.title,
+            candidate.description,
+            " ".join(candidate.reproduction_steps),
+            str(candidate.raw.get("actual_behavior", "")),
+            str(candidate.raw.get("expected_behavior", "")),
+            " ".join(self._dedup_hints(candidate)),
+        ]
+        text = "\n".join(part for part in text_parts if part).lower()
+
+        generic = {
+            "alpha",
+            "bug",
+            "issue",
+            "report",
+            "reported",
+            "reportedly",
+            "click",
+            "clicking",
+            "open",
+            "opens",
+            "panel",
+            "user",
+            "users",
+            "cortex",
+            "ide",
+        }
+        tokens: List[str] = []
+        seen: set[str] = set()
+        for token in self._hint_tokens(text):
+            if token in generic:
+                continue
+            if len(token) < 4:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+
+        scored = sorted(tokens, key=lambda token: (len(token), any(ch.isdigit() for ch in token)), reverse=True)
+        return scored[:5]
+
+    def _strict_queries(self, strict_terms: Sequence[str]) -> List[str]:
+        terms = [str(term).strip() for term in strict_terms if str(term).strip()]
+        if not terms:
+            return []
+
+        subset = terms[:5]
+        if len(subset) < 3:
+            return []
+        queries: List[str] = []
+        quoted = " ".join(f'"{token}"' for token in subset)
+        queries.append(f"repo:{self._repository} is:issue {quoted}")
+        if len(subset) >= 4:
+            relaxed = " ".join(f'"{token}"' for token in subset[:3])
+            queries.append(f"repo:{self._repository} is:issue {relaxed}")
+        return queries[:2]
+
+    def _first_issue_url_for_terms(
+        self,
+        query: str,
+        strict_terms: Sequence[str],
+    ) -> Optional[str]:
+        wanted = [str(term).strip().lower() for term in strict_terms if str(term).strip()]
+        if not wanted:
+            return None
+
+        items: List[Dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for scoped_query in self._state_queries(query):
+            results = self._search_issues_cached(scoped_query, per_page=15)
+            for item in results.get("items", []) or []:
+                url = str(item.get("html_url", "")).strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                items.append(item)
+
+        if not items:
+            return None
+
+        # Keep strict fallback precise enough to avoid collapsing distinct
+        # quick-open/provider bugs into unrelated duplicate matches.
+        required = max(2, min(5, int(math.ceil(len(wanted) * 0.55))))
+        if len(wanted) >= 4:
+            required = max(required, 3)
+        strong_terms = [term for term in wanted if len(term) >= 7]
+        for item in items:
+            title = str(item.get("title", ""))
+            body = str(item.get("body", ""))
+            issue_tokens = set(self._hint_tokens(f"{title}\n{body}"))
+            matched = sum(1 for term in wanted if term in issue_tokens)
+            if matched < required:
+                continue
+            if strong_terms:
+                strong_matched = sum(1 for term in strong_terms if term in issue_tokens)
+                if strong_matched == 0:
+                    continue
+            return item.get("html_url")
         return None
 
 
@@ -757,6 +1180,7 @@ class ProofManager:
     def __init__(self, proof_config: ProofConfig, state_dir: Path):
         self._proof_config = proof_config
         self._proof_manifest_path = state_dir / "proof_manifest.jsonl"
+        self._action_profile_ids = self._load_action_profile_ids()
         ensure_dir(self._proof_manifest_path.parent)
 
     def prepare(
@@ -783,8 +1207,107 @@ class ProofManager:
             artifact = self._prepare_single_artifact(artifact_ref)
             artifacts.append(artifact)
 
+        self._validate_finding_evidence(candidate, artifacts)
         self._append_manifest(candidate, fingerprint, artifacts)
         return artifacts
+
+    def _load_action_profile_ids(self) -> set[str]:
+        path_candidates: List[Path] = []
+        configured = os.environ.get("CORTEX_WSL_VIDEO_ACTIONS_FILE", "").strip()
+        if configured:
+            path_candidates.append(Path(configured).expanduser().resolve())
+        path_candidates.append(Path(__file__).resolve().parent / "detectors" / "cortex_wsl_video_actions.json")
+
+        for profile_path in path_candidates:
+            if not profile_path.exists():
+                continue
+            try:
+                payload = json.loads(profile_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            ids = {
+                str(key).strip().lower()
+                for key, value in payload.items()
+                if str(key).strip() and not str(key).startswith("_") and isinstance(value, list)
+            }
+            if ids:
+                return ids
+        return set()
+
+    def _validate_finding_evidence(
+        self,
+        candidate: BugCandidate,
+        artifacts: Sequence[ProofArtifact],
+    ) -> None:
+        finding_id = _candidate_finding_id(candidate)
+        if not finding_id:
+            return
+
+        matching = [artifact for artifact in artifacts if _artifact_matches_finding(artifact, finding_id)]
+        if not matching:
+            raise ValueError(
+                "Proof artifacts are not finding-specific. "
+                f"Expected artifact names to include '{finding_id}'."
+            )
+
+        # Interactive findings must show explicit GUI reproduction steps.
+        is_dynamic = _is_dynamic_bug(candidate)
+        is_action_profile = finding_id in self._action_profile_ids
+        if not is_dynamic and not is_action_profile:
+            return
+        if is_dynamic and not is_action_profile:
+            raise ValueError(
+                "Dynamic finding lacks a finding-specific action replay profile. "
+                f"Add '{finding_id}' to cortex_wsl_video_actions.json so proof captures include real GUI interaction."
+            )
+
+        screenshots = [
+            artifact
+            for artifact in matching
+            if artifact.media_type == "image" and _artifact_ext(artifact) in {".png", ".jpg", ".jpeg"}
+        ]
+        has_preclick = any(_artifact_stem(artifact).endswith(".preclick") for artifact in screenshots)
+        if not has_preclick:
+            raise ValueError(
+                "Interactive finding requires a pre-action screenshot (*.preclick.png) before the bug reproduction step."
+            )
+
+        post_action = []
+        for artifact in screenshots:
+            stem = _artifact_stem(artifact)
+            if stem == finding_id or re.match(rf"^{re.escape(finding_id)}\.step\d+$", stem):
+                post_action.append(artifact)
+
+        if not post_action:
+            raise ValueError(
+                "Finding requires click reproduction, but no post-action screenshot was captured."
+            )
+
+        has_step_capture = any(
+            re.match(rf"^{re.escape(finding_id)}\.step\d+$", _artifact_stem(artifact))
+            for artifact in post_action
+        )
+        if not has_step_capture:
+            raise ValueError(
+                "Finding requires at least one stepN post-action screenshot captured after interaction."
+            )
+
+        allow_single_post_action = finding_id.startswith("shortcut-")
+        if len(post_action) < 2 and not allow_single_post_action:
+            raise ValueError(
+                "Finding requires at least two post-action screenshots from the same reproduction."
+            )
+
+        has_motion = any(
+            artifact.media_type == "video" or _artifact_ext(artifact) == ".gif"
+            for artifact in matching
+        )
+        if not has_motion:
+            raise ValueError(
+                "Finding requires motion proof (GIF/video) showing the same GUI reproduction flow."
+            )
 
     def _auto_capture(
         self,
@@ -836,11 +1359,13 @@ class ProofManager:
         if parsed.scheme in {"http", "https"}:
             ext = Path(parsed.path).suffix.lower()
             media_type = self._extension_to_media_type(ext)
+            self._ensure_public_artifact_url(artifact_ref, media_type)
             return ProofArtifact(
                 source=artifact_ref,
                 public_url=artifact_ref,
                 media_type=media_type,
                 sha256=None,
+                backup_url=None,
             )
 
         local_path = Path(artifact_ref).expanduser().resolve()
@@ -861,24 +1386,91 @@ class ProofManager:
                 "Use URL artifacts or configure upload_cmd."
             )
 
-        public_url = self._upload_artifact(local_path)
+        public_url, backup_url = self._upload_artifact(local_path)
+        if not self._is_artifact_url_accessible(public_url, media_type):
+            if backup_url and self._is_artifact_url_accessible(backup_url, media_type):
+                # Prefer fallback when primary upload URL is not externally accessible.
+                public_url, backup_url = backup_url, public_url
+            else:
+                raise ValueError(
+                    "Uploaded proof URL is not publicly accessible from GitHub moderation."
+                )
         return ProofArtifact(
             source=str(local_path),
             public_url=public_url,
             media_type=media_type,
             sha256=sha256_file(local_path),
+            backup_url=backup_url,
         )
 
-    def _upload_artifact(self, artifact_path: Path) -> str:
+    def _upload_artifact(self, artifact_path: Path) -> Tuple[str, Optional[str]]:
         cmd = self._proof_config.upload_cmd.format(file_path=shlex.quote(str(artifact_path)))
         proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if proc.returncode != 0:
             raise ValueError(f"Artifact upload failed: {proc.stderr.strip()}")
+
+        json_payload: Optional[Dict[str, Any]] = None
+        first_url: Optional[str] = None
         for line in proc.stdout.splitlines():
             line = line.strip()
-            if line.startswith("http://") or line.startswith("https://"):
-                return line
+            if not line:
+                continue
+            if line.startswith("{"):
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    json_payload = parsed
+                    break
+            if first_url is None and (line.startswith("http://") or line.startswith("https://")):
+                first_url = line
+
+        if json_payload:
+            public_url = str(
+                json_payload.get("public_url")
+                or json_payload.get("url")
+                or ""
+            ).strip()
+            backup_url = str(
+                json_payload.get("backup_url")
+                or json_payload.get("gist_url")
+                or ""
+            ).strip() or None
+            if public_url.startswith("http://") or public_url.startswith("https://"):
+                return public_url, backup_url
+
+        if first_url:
+            return first_url, None
         raise ValueError("upload_cmd did not return a URL on stdout")
+
+    def _ensure_public_artifact_url(self, url: str, media_type: str) -> None:
+        if not self._is_artifact_url_accessible(url, media_type):
+            raise ValueError("Proof URL is not publicly accessible or does not resolve to media content")
+
+    def _is_artifact_url_accessible(self, url: str, media_type: str) -> bool:
+        if os.environ.get("CORTEX_SKIP_PROOF_URL_CHECK", "").strip() in {"1", "true", "yes"}:
+            return True
+        try:
+            response = requests.get(
+                url,
+                timeout=20,
+                allow_redirects=True,
+                stream=True,
+            )
+        except Exception:
+            return False
+
+        status_ok = 200 <= response.status_code < 300
+        content_type = str(response.headers.get("content-type", "")).lower()
+        response.close()
+        if not status_ok:
+            return False
+        if media_type == "image":
+            return content_type.startswith("image/") or "octet-stream" in content_type
+        if media_type == "video":
+            return content_type.startswith("video/") or "octet-stream" in content_type
+        return True
 
     def _extension_to_media_type(self, extension: str) -> str:
         if extension in self._proof_config.allowed_image_extensions:
@@ -904,6 +1496,7 @@ class ProofManager:
                     "public_url": x.public_url,
                     "media_type": x.media_type,
                     "sha256": x.sha256,
+                    "backup_url": x.backup_url,
                 }
                 for x in artifacts
             ],
@@ -1185,22 +1778,453 @@ def format_issue_title(raw_title: str, title_template: str) -> str:
     return title_template.replace("{title}", title)
 
 
-def render_proof_section(artifacts: Sequence[ProofArtifact], native_gui: str) -> str:
+def normalize_project_name(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return "ide"
+    lowered = value.lower()
+    if lowered in {"cortex-ide", "cortex-ides", "cortex ide", "cortex ides"}:
+        return "ide"
+    return value
+
+
+def sanitize_report_text(raw: str) -> str:
+    text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return ""
+
+    # Keep issue content user-facing; strip code-audit artifacts that often
+    # trigger invalid triage feedback.
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    lines: List[str] = []
+    skip_evidence = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        lowered = stripped.lower()
+
+        if lowered.startswith("evidence:"):
+            skip_evidence = True
+            continue
+        if skip_evidence and (not stripped):
+            continue
+        if skip_evidence and stripped.startswith("-"):
+            continue
+        if skip_evidence and stripped and not stripped.startswith("-"):
+            skip_evidence = False
+
+        # Drop path+line snippets and code-first bullets.
+        if re.search(r"(src/|src-tauri/|\.tsx?:\d+|\.rs:\d+|->)", stripped):
+            continue
+
+        cleaned = stripped.replace("`", "")
+        if cleaned:
+            lines.append(cleaned)
+
+    out = " ".join(lines).strip()
+    out = re.sub(r"\s+", " ", out)
+    return out[:1200]
+
+
+def _candidate_finding_id(candidate: BugCandidate) -> str:
+    return str(candidate.raw.get("finding_id", "")).strip().lower()
+
+
+def _artifact_name_hint(artifact: ProofArtifact) -> str:
+    source = str(artifact.source or "").strip()
+    if source:
+        parsed = urlparse(source)
+        if parsed.scheme in {"http", "https"}:
+            path_name = Path(parsed.path).name
+            if path_name:
+                return path_name.lower()
+        else:
+            path_name = Path(source).name
+            if path_name:
+                return path_name.lower()
+    return Path(urlparse(artifact.public_url).path).name.lower()
+
+
+def _artifact_ext(artifact: ProofArtifact) -> str:
+    return Path(_artifact_name_hint(artifact)).suffix.lower()
+
+
+def _artifact_stem(artifact: ProofArtifact) -> str:
+    return Path(_artifact_name_hint(artifact)).stem.lower()
+
+
+def _artifact_matches_finding(artifact: ProofArtifact, finding_id: str) -> bool:
+    if not finding_id:
+        return False
+    stem = _artifact_stem(artifact)
+    if not stem:
+        return False
+    return (
+        stem == finding_id
+        or stem.startswith(f"{finding_id}.")
+        or stem.endswith(f".{finding_id}")
+        or finding_id in stem
+    )
+
+
+def _finding_screenshot_priority(stem: str, finding_id: str) -> Tuple[int, int]:
+    if finding_id in {"titlebar-f5-pause-glyph-mismatch"} and stem == f"{finding_id}.focus":
+        return 0, 0
+    if stem == f"{finding_id}.step2":
+        return 0, 2
+    step_match = re.match(rf"^{re.escape(finding_id)}\.step(\d+)$", stem)
+    if step_match:
+        return 0, int(step_match.group(1))
+    if stem == finding_id:
+        return 1, 0
+    if stem == f"{finding_id}.focus":
+        return 2, 0
+    if stem.endswith(".preclick"):
+        return 4, 0
+    return 3, 0
+
+
+def _is_dynamic_bug(candidate: BugCandidate) -> bool:
+    finding_id = str(candidate.raw.get("finding_id", "")).strip().lower()
+    if finding_id in {
+        "titlebar-menu-missing-run",
+        "titlebar-menu-missing-git",
+        "titlebar-menu-missing-developer",
+        "titlebar-menu-missing-run-git-developer",
+        "system-info-os-misclassification",
+        "issue-provider-unreachable",
+        "wrong-default-report-repo",
+        "system-info-version-mismatch",
+    }:
+        return False
+
+    text = "\n".join(
+        [
+            candidate.title,
+            candidate.description,
+            " ".join(candidate.reproduction_steps),
+            str(candidate.raw.get("actual_behavior", "")),
+        ]
+    ).lower()
+
+    dynamic_tokens = (
+        "click",
+        "open",
+        "close",
+        "toggle",
+        "route",
+        "dispatch",
+        "navigate",
+        "command",
+        "event",
+        "flow",
+        "no-op",
+        "does nothing",
+    )
+    static_tokens = (
+        "missing menu",
+        "placeholder mismatch",
+        "label mismatch",
+        "wrong repository",
+        "hard-coded",
+        "misclassification",
+        "version mismatch",
+        "default repository",
+    )
+
+    dynamic_score = sum(1 for token in dynamic_tokens if token in text)
+    static_score = sum(1 for token in static_tokens if token in text)
+    return dynamic_score > static_score
+
+
+def candidate_submission_score(candidate: BugCandidate) -> int:
+    text = "\n".join(
+        [
+            candidate.title,
+            candidate.description,
+            " ".join(candidate.reproduction_steps),
+            str(candidate.raw.get("actual_behavior", "")),
+            str(candidate.raw.get("expected_behavior", "")),
+            str(candidate.raw.get("additional_context", "")),
+        ]
+    ).lower()
+    finding_id = _candidate_finding_id(candidate)
+
+    score = 0
+    if any(token in text for token in ("loading editor", "stuck on `loading editor", "stuck on loading editor")):
+        score += 5
+    if any(token in text for token in ("quick access", "quick open", "provider", "unreachable", "never registers")):
+        score += 3
+    if any(token in text for token in ("wrong report target", "wrong default report repo", "issue reporter")):
+        score += 2
+    if _is_dynamic_bug(candidate):
+        score += 1
+
+    has_shortcut_chord = bool(re.search(r"\b(?:ctrl|alt|shift|cmd)\s*\+", text))
+    has_conflict_claim = any(
+        token in text
+        for token in (
+            "assigned to both",
+            "bound to both",
+            "shortcut conflict",
+            "keybinding conflict",
+            "collision",
+        )
+    )
+    if has_shortcut_chord and has_conflict_claim:
+        score -= 8
+    if finding_id.startswith(LOW_CONFIDENCE_FINDING_ID_PREFIXES):
+        score -= 8
+    if finding_id in LOW_CONFIDENCE_FINDING_IDS:
+        score -= 6
+    if "no commands found" in text and not any(token in text for token in ("quick access", "quick open")):
+        score -= 6
+    if any(token in text for token in ("glyph", "iconography mismatch", "tooltip semantics")):
+        score -= 3
+
+    return score
+
+
+def evaluate_submission_candidate(candidate: BugCandidate) -> Tuple[bool, str, int]:
+    score = candidate_submission_score(candidate)
+    if os.environ.get("CORTEX_ALLOW_LOW_CONFIDENCE_FINDINGS", "").strip() in {"1", "true", "yes"}:
+        return True, "quality_gate_override", score
+
+    finding_id = _candidate_finding_id(candidate)
+    if finding_id in LOW_CONFIDENCE_FINDING_IDS:
+        return False, f"blocked_finding_id:{finding_id}", score
+    if finding_id.startswith(LOW_CONFIDENCE_FINDING_ID_PREFIXES):
+        return False, f"blocked_finding_prefix:{finding_id}", score
+
+    text = "\n".join(
+        [
+            candidate.title,
+            candidate.description,
+            " ".join(candidate.reproduction_steps),
+            str(candidate.raw.get("actual_behavior", "")),
+        ]
+    ).lower()
+    has_shortcut_chord = bool(re.search(r"\b(?:ctrl|alt|shift|cmd)\s*\+", text))
+    has_conflict_claim = any(
+        token in text
+        for token in (
+            "assigned to both",
+            "bound to both",
+            "shortcut conflict",
+            "keybinding conflict",
+            "collision",
+        )
+    )
+    if has_shortcut_chord and has_conflict_claim:
+        return False, "blocked_shortcut_conflict_pattern", score
+
+    if "no commands found" in text and not any(token in text for token in ("quick access", "quick open")):
+        return False, "blocked_no_commands_found_artifact", score
+
+    min_score = int(os.environ.get("CORTEX_MIN_SUBMISSION_SCORE", "1"))
+    if score < min_score:
+        return False, f"low_submission_score:{score}<{min_score}", score
+    return True, "passed", score
+
+
+def choose_inline_proof_artifact(
+    candidate: BugCandidate,
+    artifacts: Sequence[ProofArtifact],
+) -> Optional[ProofArtifact]:
+    if not artifacts:
+        return None
+
+    finding_id = _candidate_finding_id(candidate)
+    include_motion = os.environ.get("CORTEX_INCLUDE_MOTION_PROOF", "1").strip() != "0"
+    gifs = [a for a in artifacts if a.media_type == "image" and _artifact_ext(a) == ".gif"] if include_motion else []
+    screenshots = [
+        a
+        for a in artifacts
+        if a.media_type == "image" and _artifact_ext(a) in {".png", ".jpg", ".jpeg"}
+    ]
+
+    if finding_id:
+        finding_screens = [
+            shot
+            for shot in screenshots
+            if _artifact_matches_finding(shot, finding_id) and not _artifact_stem(shot).endswith(".preclick")
+        ]
+        if finding_screens:
+            finding_screens.sort(key=lambda shot: _finding_screenshot_priority(_artifact_stem(shot), finding_id))
+            return finding_screens[0]
+
+    if _is_dynamic_bug(candidate):
+        if gifs:
+            return gifs[0]
+        if screenshots:
+            return screenshots[0]
+    else:
+        for shot in screenshots:
+            if _artifact_stem(shot).endswith(".focus"):
+                return shot
+        if screenshots:
+            return screenshots[0]
+        if gifs:
+            return gifs[0]
+
+    return artifacts[0]
+
+
+def render_proof_section(
+    candidate: BugCandidate,
+    artifacts: Sequence[ProofArtifact],
+    native_gui: str,
+) -> str:
+    proof_mode = os.environ.get("CORTEX_PROOF_MODE", "inline_gist").strip().lower()
+    if proof_mode in {"gist", "gist_brackets", "gist-only", "gist_only"}:
+        lines = [
+            f"Native GUI: {native_gui}",
+            "Evidence links (gist brackets):",
+            "",
+        ]
+        if not artifacts:
+            lines.append("No proof artifacts available.")
+            return "\n".join(lines)
+
+        for idx, artifact in enumerate(artifacts, start=1):
+            stem = _artifact_name_hint(artifact)
+            kind = "Video" if artifact.media_type == "video" else "Image"
+            preferred = artifact.backup_url or artifact.public_url
+            if not preferred:
+                continue
+            lines.append(f"[{kind} Evidence {idx} ({stem})]({preferred})")
+        return "\n".join(lines)
+
     lines = [
         f"Native GUI: {native_gui}",
-        "Artifacts are raw captures of the observed bug behavior with no visual edits.",
+        "Artifact is captured from the Cortex GUI; focus screenshots may include a simple issue marker ring.",
         "",
     ]
-    for artifact in artifacts:
-        if artifact.media_type == "image":
-            lines.append(f"Screenshot URL: {artifact.public_url}")
-            lines.append(f"![Screenshot proof]({artifact.public_url})")
+    finding_id = _candidate_finding_id(candidate)
+    image_shots = [
+        a
+        for a in artifacts
+        if a.media_type == "image" and _artifact_ext(a) in {".png", ".jpg", ".jpeg"}
+    ]
+    include_motion = os.environ.get("CORTEX_INCLUDE_MOTION_PROOF", "1").strip() != "0"
+    gifs = [a for a in artifacts if a.media_type == "image" and _artifact_ext(a) == ".gif"] if include_motion else []
+
+    if finding_id == "open-file-label-mismatch-folder-action":
+        preclick = next((a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None)
+        dialog = next((a for a in image_shots if _artifact_stem(a) == finding_id), None)
+        if dialog is None:
+            dialog = next(
+                (
+                    a
+                    for a in image_shots
+                    if not _artifact_stem(a).endswith(".preclick")
+                    and not _artifact_stem(a).endswith(".focus")
+                    and not _artifact_stem(a).endswith(".step2")
+                ),
+                None,
+            )
+        if dialog is None:
+            dialog = next((a for a in image_shots if not _artifact_stem(a).endswith(".preclick")), None)
+
+        if preclick and dialog:
+            lines[1] = "Captured from the Cortex GUI with explicit click reproduction and resulting dialog state."
+            lines.append("![Click reproduction (Open File control)]({})".format(preclick.public_url))
             lines.append("")
+            lines.append("![Result after click (Open Folder dialog)]({})".format(dialog.public_url))
+            if dialog.backup_url:
+                lines.append("")
+                lines.append(f"[Gist backup]({dialog.backup_url})")
+            if gifs:
+                lines.append("")
+                lines.append("![Inline motion proof]({})".format(gifs[0].public_url))
+            return "\n".join(lines)
+
+    if finding_id in {
+        "dashboard-activity-tab-renders-empty-sidebar",
+        "roadmap-activity-tab-renders-empty-sidebar",
+    }:
+        preclick = next((a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None)
+        post_shots = [
+            shot
+            for shot in image_shots
+            if _artifact_matches_finding(shot, finding_id) and not _artifact_stem(shot).endswith(".preclick")
+        ]
+        if post_shots:
+            post_shots.sort(key=lambda shot: _finding_screenshot_priority(_artifact_stem(shot), finding_id))
+            post = post_shots[0]
+            if preclick:
+                lines[1] = "Captured from the Cortex GUI with explicit click reproduction and resulting empty sidebar state."
+                lines.append("![Before click (normal sidebar state)]({})".format(preclick.public_url))
+                lines.append("")
+                lines.append("![After click (empty sidebar for selected tab)]({})".format(post.public_url))
+            else:
+                lines[1] = "Captured from the Cortex GUI after reproducing the finding-specific interaction."
+                lines.append("![After click (empty sidebar for selected tab)]({})".format(post.public_url))
+            if gifs:
+                lines.append("")
+                lines.append("![Inline motion proof]({})".format(gifs[0].public_url))
+            if post.backup_url:
+                lines.append("")
+                lines.append(f"[Gist backup]({post.backup_url})")
+            return "\n".join(lines)
+
+    if finding_id:
+        finding_shots = [
+            shot
+            for shot in image_shots
+            if _artifact_matches_finding(shot, finding_id) and not _artifact_stem(shot).endswith(".preclick")
+        ]
+        if finding_shots:
+            finding_shots.sort(key=lambda shot: _finding_screenshot_priority(_artifact_stem(shot), finding_id))
+            preclick = next((a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None)
+            primary = finding_shots[0]
+            follow_up = next(
+                (
+                    shot
+                    for shot in finding_shots[1:]
+                    if shot.public_url != primary.public_url
+                ),
+                None,
+            )
+            if preclick is not None:
+                lines[1] = "Captured from the Cortex GUI with explicit before/after reproduction of the finding."
+                lines.append(f"![Before reproduction]({preclick.public_url})")
+                lines.append("")
+                lines.append(f"![After reproduction (bug state)]({primary.public_url})")
+            else:
+                lines[1] = "Captured from the Cortex GUI after reproducing the finding-specific interaction."
+                lines.append(f"![Screenshot proof]({primary.public_url})")
+            if follow_up is not None:
+                lines.append("")
+                lines.append(f"![Follow-up screenshot]({follow_up.public_url})")
+            if gifs:
+                lines.append("")
+                lines.append(f"![Inline motion proof]({gifs[0].public_url})")
+            if primary.backup_url:
+                lines.append("")
+                lines.append(f"[Gist backup]({primary.backup_url})")
+            return "\n".join(lines)
+
+    selected = choose_inline_proof_artifact(candidate, artifacts)
+    if selected is None:
+        lines.append("Proof artifact unavailable.")
+        return "\n".join(lines)
+
+    ext = _artifact_ext(selected)
+    if selected.media_type == "image":
+        if ext == ".gif":
+            lines.append(f"![Inline motion proof]({selected.public_url})")
         else:
-            lines.append(f"Video URL: {artifact.public_url}")
-            lines.append(f"[View video proof]({artifact.public_url})")
-            lines.append(f'<video src="{artifact.public_url}" controls></video>')
+            lines.append(f"![Screenshot proof]({selected.public_url})")
+        if selected.backup_url:
             lines.append("")
+            lines.append(f"[Gist backup]({selected.backup_url})")
+        return "\n".join(lines)
+
+    # Fallback path; GitHub usually strips <video> in issue bodies.
+    lines.append(f'<video src="{selected.public_url}" controls></video>')
+    if selected.backup_url:
+        lines.append("")
+        lines.append(f"[Gist backup]({selected.backup_url})")
     return "\n".join(lines)
 
 
@@ -1212,15 +2236,21 @@ def render_issue_body(
     external_repo: str,
     proof_cfg: ProofConfig,
 ) -> str:
-    proof_section = render_proof_section(artifacts, candidate.native_gui)
+    proof_section = render_proof_section(candidate, artifacts, candidate.native_gui)
 
-    steps_text = "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(candidate.reproduction_steps))
-    actual_behavior = str(candidate.raw.get("actual_behavior", "")).strip() or candidate.description
+    summary_text = sanitize_report_text(candidate.description) or candidate.description
+    sanitized_steps: List[str] = []
+    for step in candidate.reproduction_steps:
+        cleaned = sanitize_report_text(step) or str(step).strip()
+        if cleaned:
+            sanitized_steps.append(cleaned)
+    steps_text = "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(sanitized_steps))
+    actual_behavior = sanitize_report_text(str(candidate.raw.get("actual_behavior", "")).strip()) or summary_text
     expected_behavior = (
-        str(candidate.raw.get("expected_behavior", "")).strip()
+        sanitize_report_text(str(candidate.raw.get("expected_behavior", "")).strip())
         or "Feature should route data and actions to the intended target and display accurate metadata."
     )
-    project_name = str(candidate.raw.get("project", "")).strip() or "cortex-ide"
+    project_name = normalize_project_name(str(candidate.raw.get("project", "")).strip())
     error_message = (
         str(candidate.raw.get("error_message", "")).strip()
         or "No explicit runtime error message is shown in the UI."
@@ -1234,16 +2264,15 @@ def render_issue_body(
         or f"Native GUI: {candidate.native_gui}"
     )
     additional_context = str(candidate.raw.get("additional_context", "")).strip() or (
-        f"Impact: {candidate.impact}\n\n"
-        f"Local fingerprint: `{fingerprint}`\n"
-        f"External duplicate check repository: `{external_repo}`"
+        "Captured from Cortex IDE with in-app reproduction and inline visual evidence."
     )
+    additional_context = sanitize_report_text(additional_context) or additional_context
 
     section_map = {
         "project": project_name,
-        "summary": candidate.description,
-        "bug summary": candidate.description,
-        "description": candidate.description,
+        "summary": summary_text,
+        "bug summary": summary_text,
+        "description": summary_text,
         "error message": error_message,
         "debug logs": debug_logs,
         "system information": system_information,
@@ -1270,7 +2299,7 @@ def render_issue_body(
                 project_name,
                 "",
                 "### Description",
-                candidate.description,
+                summary_text,
                 "",
                 "### Error Message",
                 error_message,
@@ -1453,13 +2482,38 @@ class AuditOrchestrator:
         assert self._dedup_store is not None
         assert self._proof_manager is not None
         assert self._external_checker is not None
+        # Allow proof upload backends to infer a default owner/repo from the audited checkout.
+        os.environ["PROOF_SOURCE_REPO_PATH"] = str(source_path)
 
         submitted = 0
-        for candidate in candidates:
+        ordered_candidates = sorted(
+            candidates,
+            key=candidate_submission_score,
+            reverse=True,
+        )
+        for candidate in ordered_candidates:
             if self._daily_state.all_targets_met(self._config.runtime.valid_target_per_repo):
                 break
 
             fingerprint = compute_fingerprint(candidate)
+            quality_ok, quality_reason, quality_score = evaluate_submission_candidate(candidate)
+            if not quality_ok:
+                reserved = self._dedup_store.try_reserve(
+                    fingerprint,
+                    candidate,
+                    source_repo=str(source_path),
+                )
+                if reserved:
+                    self._dedup_store.mark_skipped(
+                        fingerprint,
+                        f"quality_gate_failed:{quality_reason}:score={quality_score}",
+                    )
+                print(
+                    f"[audit] skipped '{candidate.title}' due to quality gate: "
+                    f"{quality_reason} (score={quality_score})"
+                )
+                continue
+
             reserved = self._dedup_store.try_reserve(
                 fingerprint,
                 candidate,
@@ -1467,13 +2521,6 @@ class AuditOrchestrator:
             )
             if not reserved:
                 print(f"[audit] skipped '{candidate.title}' due to local dedup")
-                continue
-
-            try:
-                artifacts = self._proof_manager.prepare(candidate, fingerprint, source_path)
-            except Exception as exc:
-                print(f"[audit] skipped '{candidate.title}' due to proof validation: {exc}")
-                self._dedup_store.mark_skipped(fingerprint, f"proof_validation_failed:{exc}")
                 continue
 
             try:
@@ -1492,6 +2539,13 @@ class AuditOrchestrator:
                     fingerprint,
                     f"external_duplicate:{duplicate_url or 'match_found'}",
                 )
+                continue
+
+            try:
+                artifacts = self._proof_manager.prepare(candidate, fingerprint, source_path)
+            except Exception as exc:
+                print(f"[audit] skipped '{candidate.title}' due to proof validation: {exc}")
+                self._dedup_store.mark_skipped(fingerprint, f"proof_validation_failed:{exc}")
                 continue
 
             repo_name = self._daily_state.choose_repo(self._config.runtime.valid_target_per_repo)
