@@ -29,6 +29,7 @@ GITHUB_API_BASE = "https://api.github.com"
 DEFAULT_EXTERNAL_REPO = "PlatformNetwork/bounty-challenge"
 DEFAULT_DAILY_VALID_TARGET = 25
 DEFAULT_POLL_SECONDS = 120
+DEFAULT_TITLE_TEMPLATE = "[BUG] [alpha] {title}"
 INVALID_LABELS = {"invalid", "duplicate", "duplicated"}
 
 LOW_CONFIDENCE_FINDING_ID_PREFIXES: Tuple[str, ...] = (
@@ -54,6 +55,70 @@ HIGH_CONFIDENCE_VIDEO_FINDING_IDS = {
     "editor-loading-stuck-terminalgrouptabs-file-open",
     "quickaccess-term-new-terminal-query-no-results",
 }
+VALIDATED_VIDEO_CLASS_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    (
+        "routing_loading",
+        (
+            "loading editor",
+            "stuck on loading",
+            "quick access",
+            "quick open",
+            "provider",
+            "never registers",
+            "unreachable",
+        ),
+    ),
+    (
+        "visible_no_op",
+        (
+            "does nothing",
+            "no-op",
+            "no effect",
+            "isn't clickable",
+            "is not clickable",
+            "button doesn't work",
+            "action doesn't work",
+            "never opens",
+            "does not open",
+            "does not submit",
+        ),
+    ),
+    (
+        "modal_focus_escape",
+        (
+            "focus trap",
+            "focus escapes",
+            "does not close on escape",
+            "do not close on escape",
+            "escape key does not close",
+            "tabbable while hidden",
+            "outside click",
+        ),
+    ),
+    (
+        "missing_confirmation",
+        (
+            "without confirmation",
+            "without warning",
+            "discards unsaved",
+            "discarding unsaved",
+            "immediately without confirmation",
+        ),
+    ),
+    (
+        "false_state_feedback",
+        (
+            "empty state",
+            "blank",
+            "no visual feedback",
+            "still says",
+            "false \"no",
+            "false 'no",
+            "shows 0.0",
+            "no terminal instance",
+        ),
+    ),
+)
 
 
 class ConfigError(RuntimeError):
@@ -95,6 +160,30 @@ def only_validated_video_families_enabled() -> bool:
     return value not in {"0", "false", "no"}
 
 
+def normalize_title_template(template: str) -> str:
+    value = str(template or "").strip()
+    if re.fullmatch(r"\[\s*bug\s*\]\s*\[\s*alpha\s*\]\s*\{title\}", value, flags=re.IGNORECASE):
+        return DEFAULT_TITLE_TEMPLATE
+    return value
+
+
+def matched_validated_video_class(candidate: "BugCandidate") -> Optional[str]:
+    text = "\n".join(
+        [
+            candidate.title,
+            candidate.description,
+            " ".join(candidate.reproduction_steps),
+            str(candidate.raw.get("actual_behavior", "")),
+            str(candidate.raw.get("expected_behavior", "")),
+            str(candidate.raw.get("additional_context", "")),
+        ]
+    ).lower()
+    for class_name, tokens in VALIDATED_VIDEO_CLASS_RULES:
+        if any(token in text for token in tokens):
+            return class_name
+    return None
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -127,6 +216,13 @@ def normalize_repo_ref(value: str) -> str:
     if len(parts) >= 2:
         return f"{parts[0]}/{parts[1]}"
     return raw
+
+
+def default_submission_labels(issue_repo: str) -> List[str]:
+    normalized = normalize_repo_ref(issue_repo).lower()
+    if normalized == DEFAULT_EXTERNAL_REPO.lower():
+        return ["bug", "ide"]
+    return []
 
 
 def json_dump(path: Path, payload: Dict[str, Any]) -> None:
@@ -182,7 +278,7 @@ class ProofConfig:
 
 @dataclass
 class SubmissionConfig:
-    title_template: str = "[Bug][alpha]{title}"
+    title_template: str = DEFAULT_TITLE_TEMPLATE
     issue_repo: str = DEFAULT_EXTERNAL_REPO
 
 
@@ -340,6 +436,8 @@ class ConfigLoader:
                 )
             if not isinstance(labels, list):
                 raise ConfigError(f"labels must be a list for repository {name}")
+            if not labels:
+                labels = default_submission_labels(f"{owner}/{repo_name}")
             issue_template = entry.get("issue_template")
             if issue_template is not None:
                 issue_template = str(issue_template)
@@ -425,9 +523,9 @@ class ConfigLoader:
             raw_submission = {}
         if not isinstance(raw_submission, dict):
             raise ConfigError("submission must be a mapping")
-        title_template = str(
-            raw_submission.get("title_template", "[Bug][alpha]{title}")
-        ).strip()
+        title_template = normalize_title_template(
+            str(raw_submission.get("title_template", DEFAULT_TITLE_TEMPLATE)).strip()
+        )
         issue_repo = normalize_repo_ref(str(raw_submission.get("issue_repo", DEFAULT_EXTERNAL_REPO)).strip())
         if not title_template:
             raise ConfigError("submission.title_template cannot be empty")
@@ -1825,9 +1923,15 @@ def compute_fingerprint(candidate: BugCandidate) -> str:
 
 
 def format_issue_title(raw_title: str, title_template: str) -> str:
+    title_template = normalize_title_template(title_template)
     title = raw_title.strip()
     if not title:
         return title_template.replace("{title}", "Untitled bug")
+
+    if title_template == DEFAULT_TITLE_TEMPLATE:
+        normalized = re.sub(r"^\[\s*bug\s*\]\s*\[\s*alpha\s*\]\s*", "", title, flags=re.IGNORECASE).strip()
+        if normalized != title:
+            return title_template.replace("{title}", normalized or "Untitled bug")
 
     prefix = title_template.split("{title}", 1)[0]
     if prefix and title.lower().startswith(prefix.lower()):
@@ -2020,6 +2124,7 @@ def candidate_submission_score(candidate: BugCandidate) -> int:
         ]
     ).lower()
     finding_id = _candidate_finding_id(candidate)
+    matched_video_class = matched_validated_video_class(candidate)
 
     score = 0
     if any(token in text for token in ("loading editor", "stuck on `loading editor", "stuck on loading editor")):
@@ -2032,6 +2137,8 @@ def candidate_submission_score(candidate: BugCandidate) -> int:
         score += 1
     if finding_id in HIGH_CONFIDENCE_VIDEO_FINDING_IDS:
         score += 6
+    if matched_video_class:
+        score += 3
 
     has_shortcut_chord = bool(re.search(r"\b(?:ctrl|alt|shift|cmd)\s*\+", text))
     has_conflict_claim = any(
@@ -2064,8 +2171,9 @@ def evaluate_submission_candidate(candidate: BugCandidate) -> Tuple[bool, str, i
         return True, "quality_gate_override", score
 
     finding_id = _candidate_finding_id(candidate)
+    matched_video_class = matched_validated_video_class(candidate)
     if strict_video_proof_enabled() and only_validated_video_families_enabled():
-        if finding_id not in HIGH_CONFIDENCE_VIDEO_FINDING_IDS:
+        if finding_id not in HIGH_CONFIDENCE_VIDEO_FINDING_IDS and matched_video_class is None:
             return False, f"unvalidated_video_family:{finding_id or 'missing'}", score
     if finding_id in LOW_CONFIDENCE_FINDING_IDS:
         return False, f"blocked_finding_id:{finding_id}", score

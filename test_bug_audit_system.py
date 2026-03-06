@@ -14,9 +14,14 @@ if not hasattr(yaml_stub, "YAMLError"):
 
 from bug_audit_system import (
     BugCandidate,
+    DEFAULT_TITLE_TEMPLATE,
     ProofArtifact,
     choose_inline_proof_artifact,
+    default_submission_labels,
     evaluate_submission_candidate,
+    format_issue_title,
+    matched_validated_video_class,
+    normalize_title_template,
     render_proof_section,
 )
 
@@ -85,17 +90,58 @@ class SubmissionQualityGateTests(unittest.TestCase):
                     make_candidate(finding_id, title, description)
                 )
                 self.assertFalse(allowed)
-                self.assertEqual(reason, f"unvalidated_video_family:{finding_id}")
+                self.assertIn(
+                    reason,
+                    {
+                        f"unvalidated_video_family:{finding_id}",
+                        f"blocked_finding_id:{finding_id}",
+                    },
+                )
 
-    def test_blocks_unknown_gui_video_families_until_validated(self) -> None:
+    def test_allows_validated_routing_loading_class(self) -> None:
         candidate = make_candidate(
             "issue-provider-unreachable",
             "Quick Access advertises 'issue' command but never registers provider",
             "The visible Quick Access help entry exists, but the GUI router never registers the issue provider.",
         )
+        self.assertEqual(matched_validated_video_class(candidate), "routing_loading")
+        allowed, reason, _score = evaluate_submission_candidate(candidate)
+        self.assertTrue(allowed, reason)
+        self.assertEqual(reason, "passed")
+
+    def test_allows_validated_visible_no_op_class(self) -> None:
+        candidate = make_candidate(
+            "new-terminal-export-button-no-op",
+            "Export profiling data button doesn't work",
+            "The visible Export action is clickable but does nothing after the user activates it.",
+        )
+        self.assertEqual(matched_validated_video_class(candidate), "visible_no_op")
+        allowed, reason, score = evaluate_submission_candidate(candidate)
+        self.assertTrue(allowed, reason)
+        self.assertEqual(reason, "passed")
+        self.assertGreaterEqual(score, 1)
+
+    def test_allows_validated_modal_focus_class(self) -> None:
+        candidate = make_candidate(
+            "send-feedback-no-focus-trap",
+            "Send Feedback dialog has no focus trap",
+            "Tab key moves focus to background controls and Escape key does not close the modal reliably.",
+        )
+        self.assertEqual(matched_validated_video_class(candidate), "modal_focus_escape")
+        allowed, reason, _score = evaluate_submission_candidate(candidate)
+        self.assertTrue(allowed, reason)
+        self.assertEqual(reason, "passed")
+
+    def test_keeps_specific_low_confidence_findings_blocked(self) -> None:
+        candidate = make_candidate(
+            "worktree-open-new-window-event-unhandled",
+            "Worktree Open in New Window action is a no-op",
+            "Open in New Window dispatches an event but does nothing after the user clicks it.",
+        )
+        self.assertEqual(matched_validated_video_class(candidate), "visible_no_op")
         allowed, reason, _score = evaluate_submission_candidate(candidate)
         self.assertFalse(allowed)
-        self.assertEqual(reason, "unvalidated_video_family:issue-provider-unreachable")
+        self.assertEqual(reason, "blocked_finding_id:worktree-open-new-window-event-unhandled")
 
     def test_allows_recently_validated_families(self) -> None:
         validated = {
@@ -147,6 +193,32 @@ class DetectorMetadataTests(unittest.TestCase):
             if len(paths) > 1 and finding_id not in ALLOWED_DUPLICATE_FINDING_IDS
         }
         self.assertFalse(unexpected_duplicates, unexpected_duplicates)
+
+
+class SubmissionMetadataTests(unittest.TestCase):
+    def test_bounty_challenge_defaults_to_bug_and_ide_labels(self) -> None:
+        self.assertEqual(
+            default_submission_labels("PlatformNetwork/bounty-challenge"),
+            ["bug", "ide"],
+        )
+
+    def test_non_bounty_repo_has_no_forced_labels(self) -> None:
+        self.assertEqual(
+            default_submission_labels("owner/other-repo"),
+            [],
+        )
+
+    def test_old_bug_alpha_template_is_normalized(self) -> None:
+        self.assertEqual(
+            normalize_title_template("[Bug][alpha]{title}"),
+            DEFAULT_TITLE_TEMPLATE,
+        )
+
+    def test_old_bug_alpha_title_is_rendered_in_canonical_form(self) -> None:
+        self.assertEqual(
+            format_issue_title("[Bug][alpha]Quick Open fails", "[Bug][alpha]{title}"),
+            "[BUG] [alpha] Quick Open fails",
+        )
 
 
 class StrictVideoProofTests(unittest.TestCase):
