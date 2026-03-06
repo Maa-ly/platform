@@ -38,6 +38,21 @@ LOW_CONFIDENCE_FINDING_ID_PREFIXES: Tuple[str, ...] = (
 LOW_CONFIDENCE_FINDING_IDS = {
     "titlebar-f5-pause-glyph-mismatch",
     "terminal-split-down-shortcut-label-malformed-ctrl-shift-quote",
+    # Historically rejected or duplicate-prone families from live moderation.
+    "dashboard-activity-tab-renders-empty-sidebar",
+    "roadmap-activity-tab-renders-empty-sidebar",
+    "quickaccess-percent-provider-unreachable",
+    "quickaccess-help-query-ignored-no-filtering",
+    "quickopen-question-prefix-routed-to-files",
+    "quickchat-open-full-chat-event-unhandled",
+    "worktree-open-new-window-event-unhandled",
+}
+HIGH_CONFIDENCE_VIDEO_FINDING_IDS = {
+    # Live-validated GUI video families from 2026-03-05 moderation:
+    # #23136, #23278, #23284
+    "quickaccess-editor-mru-provider-unreachable",
+    "editor-loading-stuck-terminalgrouptabs-file-open",
+    "quickaccess-term-new-terminal-query-no-results",
 }
 
 
@@ -68,6 +83,16 @@ def ensure_dir(path: Path) -> None:
 
 def normalize_text(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
+
+
+def strict_video_proof_enabled() -> bool:
+    value = os.environ.get("CORTEX_STRICT_VIDEO_PROOF", "1").strip().lower()
+    return value not in {"0", "false", "no"}
+
+
+def only_validated_video_families_enabled() -> bool:
+    value = os.environ.get("CORTEX_ONLY_VALIDATED_VIDEO_FAMILIES", "1").strip().lower()
+    return value not in {"0", "false", "no"}
 
 
 def sha256_file(path: Path) -> str:
@@ -1197,19 +1222,37 @@ class ProofManager:
             if generated:
                 candidate.proof_artifacts = generated
             else:
+                proof_kind = "video" if strict_video_proof_enabled() else "screenshot/video"
                 raise ValueError(
-                    "No proof_artifacts provided. Attach native GUI screenshot/video "
+                    f"No proof_artifacts provided. Attach native GUI {proof_kind} "
                     "before submission."
                 )
 
+        artifact_refs = list(candidate.proof_artifacts)
+        if strict_video_proof_enabled():
+            artifact_refs = self._video_only_artifact_refs(artifact_refs)
+            if not artifact_refs:
+                raise ValueError(
+                    "Strict video proof mode is enabled, but no video proof_artifacts were provided."
+                )
+            candidate.proof_artifacts = artifact_refs
+
         artifacts: List[ProofArtifact] = []
-        for artifact_ref in candidate.proof_artifacts:
+        for artifact_ref in artifact_refs:
             artifact = self._prepare_single_artifact(artifact_ref)
             artifacts.append(artifact)
 
         self._validate_finding_evidence(candidate, artifacts)
         self._append_manifest(candidate, fingerprint, artifacts)
         return artifacts
+
+    def _video_only_artifact_refs(self, artifact_refs: Sequence[str]) -> List[str]:
+        out: List[str] = []
+        for artifact_ref in artifact_refs:
+            ext = Path(urlparse(artifact_ref).path or artifact_ref).suffix.lower()
+            if ext in self._proof_config.allowed_video_extensions:
+                out.append(artifact_ref)
+        return out
 
     def _load_action_profile_ids(self) -> set[str]:
         path_candidates: List[Path] = []
@@ -1256,12 +1299,26 @@ class ProofManager:
         is_dynamic = _is_dynamic_bug(candidate)
         is_action_profile = finding_id in self._action_profile_ids
         if not is_dynamic and not is_action_profile:
+            if strict_video_proof_enabled():
+                has_video = any(artifact.media_type == "video" for artifact in matching)
+                if not has_video:
+                    raise ValueError(
+                        "Strict video proof mode requires a finding-specific video artifact."
+                    )
             return
         if is_dynamic and not is_action_profile:
             raise ValueError(
                 "Dynamic finding lacks a finding-specific action replay profile. "
                 f"Add '{finding_id}' to cortex_wsl_video_actions.json so proof captures include real GUI interaction."
             )
+
+        if strict_video_proof_enabled():
+            has_video = any(artifact.media_type == "video" for artifact in matching)
+            if not has_video:
+                raise ValueError(
+                    "Strict video proof mode requires a finding-specific video artifact."
+                )
+            return
 
         screenshots = [
             artifact
@@ -1883,6 +1940,21 @@ def _finding_screenshot_priority(stem: str, finding_id: str) -> Tuple[int, int]:
     return 3, 0
 
 
+def _video_artifact_priority(artifact: ProofArtifact) -> Tuple[int, int, str]:
+    stem = _artifact_stem(artifact)
+    ext = _artifact_ext(artifact)
+    is_cursor = stem.endswith(".cursor")
+    is_primary = stem == _candidate_like_stem(stem)
+    ext_rank = 0 if ext == ".mp4" else 1
+    return (0 if is_primary else 1 if not is_cursor else 2, ext_rank, stem)
+
+
+def _candidate_like_stem(stem: str) -> str:
+    if stem.endswith(".cursor"):
+        return stem[: -len(".cursor")]
+    return stem
+
+
 def _is_dynamic_bug(candidate: BugCandidate) -> bool:
     finding_id = str(candidate.raw.get("finding_id", "")).strip().lower()
     if finding_id in {
@@ -1958,6 +2030,8 @@ def candidate_submission_score(candidate: BugCandidate) -> int:
         score += 2
     if _is_dynamic_bug(candidate):
         score += 1
+    if finding_id in HIGH_CONFIDENCE_VIDEO_FINDING_IDS:
+        score += 6
 
     has_shortcut_chord = bool(re.search(r"\b(?:ctrl|alt|shift|cmd)\s*\+", text))
     has_conflict_claim = any(
@@ -1990,6 +2064,9 @@ def evaluate_submission_candidate(candidate: BugCandidate) -> Tuple[bool, str, i
         return True, "quality_gate_override", score
 
     finding_id = _candidate_finding_id(candidate)
+    if strict_video_proof_enabled() and only_validated_video_families_enabled():
+        if finding_id not in HIGH_CONFIDENCE_VIDEO_FINDING_IDS:
+            return False, f"unvalidated_video_family:{finding_id or 'missing'}", score
     if finding_id in LOW_CONFIDENCE_FINDING_IDS:
         return False, f"blocked_finding_id:{finding_id}", score
     if finding_id.startswith(LOW_CONFIDENCE_FINDING_ID_PREFIXES):
@@ -2034,6 +2111,18 @@ def choose_inline_proof_artifact(
         return None
 
     finding_id = _candidate_finding_id(candidate)
+    videos = [a for a in artifacts if a.media_type == "video"]
+    if strict_video_proof_enabled():
+        if finding_id:
+            finding_videos = [video for video in videos if _artifact_matches_finding(video, finding_id)]
+            if finding_videos:
+                finding_videos.sort(key=_video_artifact_priority)
+                return finding_videos[0]
+        if videos:
+            videos.sort(key=_video_artifact_priority)
+            return videos[0]
+        return None
+
     include_motion = os.environ.get("CORTEX_INCLUDE_MOTION_PROOF", "1").strip() != "0"
     gifs = [a for a in artifacts if a.media_type == "image" and _artifact_ext(a) == ".gif"] if include_motion else []
     screenshots = [
@@ -2075,23 +2164,43 @@ def render_proof_section(
     native_gui: str,
 ) -> str:
     proof_mode = os.environ.get("CORTEX_PROOF_MODE", "inline_gist").strip().lower()
+    video_only = strict_video_proof_enabled()
+    proof_artifacts = [artifact for artifact in artifacts if artifact.media_type == "video"] if video_only else list(artifacts)
     if proof_mode in {"gist", "gist_brackets", "gist-only", "gist_only"}:
         lines = [
             f"Native GUI: {native_gui}",
             "Evidence links (gist brackets):",
             "",
         ]
-        if not artifacts:
+        if not proof_artifacts:
             lines.append("No proof artifacts available.")
             return "\n".join(lines)
 
-        for idx, artifact in enumerate(artifacts, start=1):
+        for idx, artifact in enumerate(proof_artifacts, start=1):
             stem = _artifact_name_hint(artifact)
             kind = "Video" if artifact.media_type == "video" else "Image"
             preferred = artifact.backup_url or artifact.public_url
             if not preferred:
                 continue
             lines.append(f"[{kind} Evidence {idx} ({stem})]({preferred})")
+        return "\n".join(lines)
+
+    if video_only:
+        lines = [
+            f"Native GUI: {native_gui}",
+            "Video artifact is captured from the Cortex GUI.",
+            "",
+        ]
+        selected = choose_inline_proof_artifact(candidate, proof_artifacts)
+        if selected is None:
+            lines.append("Proof artifact unavailable.")
+            return "\n".join(lines)
+        lines.append(f'<video src="{selected.public_url}" controls></video>')
+        lines.append("")
+        lines.append(f"[Video proof]({selected.public_url})")
+        if selected.backup_url:
+            lines.append("")
+            lines.append(f"[Gist backup]({selected.backup_url})")
         return "\n".join(lines)
 
     lines = [

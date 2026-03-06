@@ -291,6 +291,12 @@
     {"delayMs": 520, "text": "?term"},
     {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
   ],
+  "quickopen-question-prefix-routed-to-files": [
+    {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
+    {"delayMs": 340, "hotkey": "ctrl+p"},
+    {"delayMs": 520, "text": "?term"},
+    {"delayMs": 1400, "xRatio": 0.52, "yRatio": 0.20, "click": false, "button": "left"}
+  ],
   "editor-loading-skeleton-stuck-after-open-file": [
     {"delayMs": 260, "xRatio": 0.52, "yRatio": 0.40, "click": true, "button": "left"},
     {"delayMs": 320, "xRatio": 0.52, "yRatio": 0.40, "hotkey": "ctrl+shift+p"},

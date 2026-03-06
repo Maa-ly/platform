@@ -56,8 +56,7 @@ def main() -> None:
     findings: List[Dict[str, object]] = []
 
     if ctrl_p_line and help_prefix_line and help_provider_map_line:
-        # Reuse the existing proof artifact family captured for `?term` behavior.
-        finding_id = "quickaccess-help-query-ignored-no-filtering"
+        finding_id = "quickopen-question-prefix-routed-to-files"
         findings.append(
             {
                 "finding_id": finding_id,
@@ -92,6 +91,8 @@ def main() -> None:
                 ),
                 "native_gui": "Cortex IDE",
                 "dedup_hints": [
+                    "Ctrl+P Quick Open ignores non-file quick access prefixes and stays in file-search mode",
+                    "Ctrl+P Quick Open ignores term prefix and stays in file-search mode",
                     "question prefix routing mismatch between file finder and quick access help",
                     "question-mark prefix in ctrl+p does not enter help provider mode",
                 ],
