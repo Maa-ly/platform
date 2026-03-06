@@ -9,15 +9,24 @@ This project implements a daily bug-auditing pipeline that:
 5. Enforces proof-of-bug requirements (native GUI artifacts, unedited capture policy, allowed formats).
 6. Submits issues to 6 GitHub repositories in round-robin order until each has 25 valid issues per day.
 7. Tracks invalid labels and compensates by submitting additional valid issues.
-8. Enforces issue-title formatting via `submission.title_template` (default: `[Bug][alpha]{title}`).
+8. Enforces issue-title formatting via `submission.title_template` (default: `[BUG] [alpha] {title}`).
 
 ## Files
 
 - `/Users/odeili/Projects/algo_platform/bug_audit_system.py` - main orchestrator.
 - `/Users/odeili/Projects/algo_platform/config.example.yaml` - configuration template.
+- `/Users/odeili/Projects/algo_platform/config.yaml` - default local run config.
+- `/Users/odeili/Projects/algo_platform/configs/archive/live_full_submit/` - archived one-off `live_full_submit` retries and dated run snapshots.
 - `/Users/odeili/Projects/algo_platform/.audit_state/local_dedup.sqlite3` - created at runtime.
 - `/Users/odeili/Projects/algo_platform/.audit_state/daily_state.json` - created at runtime.
 - `/Users/odeili/Projects/algo_platform/.audit_state/daily_summary.json` - created at runtime.
+
+## Config Layout
+
+- Keep reusable profile configs at the repository root.
+- Keep `config.yaml` as the default local entrypoint for manual runs.
+- Historical one-off retries and dated snapshots live under `/Users/odeili/Projects/algo_platform/configs/archive/live_full_submit/`.
+- If a new config is only for a single experiment or incident replay, archive it after the run instead of leaving it at the root.
 
 ## Setup
 
@@ -77,7 +86,7 @@ Optional:
 ## Title Template
 
 - Config key: `submission.title_template`
-- Default: `[Bug][alpha]{title}`
+- Default: `[BUG] [alpha] {title}`
 - The `{title}` placeholder is mandatory.
 
 ## Run
