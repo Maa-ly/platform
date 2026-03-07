@@ -1,5 +1,8 @@
 import ast
+import shutil
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from collections import defaultdict
@@ -14,6 +17,7 @@ if not hasattr(yaml_stub, "YAMLError"):
 
 from bug_audit_system import (
     BugCandidate,
+    CodebaseManager,
     DEFAULT_TITLE_TEMPLATE,
     ProofArtifact,
     choose_inline_proof_artifact,
@@ -31,6 +35,7 @@ DETECTORS_DIR = ROOT / "detectors"
 ALLOWED_DUPLICATE_FINDING_IDS = {
     "titlebar-f5-pause-glyph-mismatch",
 }
+HAS_GIT = shutil.which("git") is not None
 
 
 def make_candidate(finding_id: str, title: str, description: str) -> BugCandidate:
@@ -285,6 +290,107 @@ class StrictVideoProofTests(unittest.TestCase):
         self.assertNotIn("![", rendered)
         self.assertIn("<video", rendered)
         self.assertIn("[Video proof](", rendered)
+
+
+@unittest.skipUnless(HAS_GIT, "git is required for checkout sync tests")
+class CodebaseManagerSyncTests(unittest.TestCase):
+    def _git(self, *args: str, cwd: Path | None = None) -> str:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            self.fail(f"git {' '.join(args)} failed:\nstdout={proc.stdout}\nstderr={proc.stderr}")
+        return proc.stdout.strip()
+
+    def _init_repo(self, path: Path) -> None:
+        self._git("init", cwd=path)
+        self._git("checkout", "-b", "main", cwd=path)
+        self._git("config", "user.name", "Test User", cwd=path)
+        self._git("config", "user.email", "test@example.com", cwd=path)
+
+    def test_prepare_pulls_clean_local_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            remote = temp_root / "remote.git"
+            seed = temp_root / "seed"
+            checkout = temp_root / "checkout"
+            clone_root = temp_root / "managed-clones"
+
+            self._git("init", "--bare", str(remote))
+
+            seed.mkdir()
+            self._init_repo(seed)
+            tracked_file = seed / "tracked.txt"
+            tracked_file.write_text("v1\n", encoding="utf-8")
+            self._git("add", "tracked.txt", cwd=seed)
+            self._git("commit", "-m", "initial", cwd=seed)
+            self._git("remote", "add", "origin", str(remote), cwd=seed)
+            self._git("push", "-u", "origin", "main", cwd=seed)
+
+            self._git("clone", str(remote), str(checkout))
+            self._git("checkout", "main", cwd=checkout)
+
+            tracked_file.write_text("v2\n", encoding="utf-8")
+            self._git("commit", "-am", "update", cwd=seed)
+            self._git("push", "origin", "main", cwd=seed)
+
+            manager = CodebaseManager(
+                clone_root=clone_root,
+                sync_local_git_source=True,
+                local_git_sync_interval_seconds=0,
+            )
+            prepared = manager.prepare(str(checkout))
+
+            self.assertEqual(prepared, checkout.resolve())
+            self.assertEqual((checkout / "tracked.txt").read_text(encoding="utf-8"), "v2\n")
+
+    def test_prepare_skips_pull_when_local_checkout_has_tracked_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            remote = temp_root / "remote.git"
+            seed = temp_root / "seed"
+            checkout = temp_root / "checkout"
+            clone_root = temp_root / "managed-clones"
+
+            self._git("init", "--bare", str(remote))
+
+            seed.mkdir()
+            self._init_repo(seed)
+            tracked_file = seed / "tracked.txt"
+            tracked_file.write_text("v1\n", encoding="utf-8")
+            self._git("add", "tracked.txt", cwd=seed)
+            self._git("commit", "-m", "initial", cwd=seed)
+            self._git("remote", "add", "origin", str(remote), cwd=seed)
+            self._git("push", "-u", "origin", "main", cwd=seed)
+
+            self._git("clone", str(remote), str(checkout))
+            self._git("checkout", "main", cwd=checkout)
+            initial_checkout_head = self._git("rev-parse", "HEAD", cwd=checkout)
+
+            (checkout / "tracked.txt").write_text("local change\n", encoding="utf-8")
+            tracked_file.write_text("v2\n", encoding="utf-8")
+            self._git("commit", "-am", "update", cwd=seed)
+            self._git("push", "origin", "main", cwd=seed)
+            remote_head = self._git("rev-parse", "HEAD", cwd=seed)
+
+            manager = CodebaseManager(
+                clone_root=clone_root,
+                sync_local_git_source=True,
+                local_git_sync_interval_seconds=0,
+            )
+            manager.prepare(str(checkout))
+
+            self.assertEqual(
+                (checkout / "tracked.txt").read_text(encoding="utf-8"),
+                "local change\n",
+            )
+            self.assertEqual(self._git("rev-parse", "HEAD", cwd=checkout), initial_checkout_head)
+            self.assertEqual(self._git("rev-parse", "origin/main", cwd=checkout), remote_head)
+            self.assertNotEqual(initial_checkout_head, remote_head)
 
 
 if __name__ == "__main__":

@@ -263,6 +263,8 @@ class RuntimeConfig:
     poll_interval_seconds: int = DEFAULT_POLL_SECONDS
     valid_target_per_repo: int = DEFAULT_DAILY_VALID_TARGET
     stop_when_targets_met: bool = True
+    sync_local_git_source: bool = True
+    local_git_sync_interval_seconds: int = DEFAULT_POLL_SECONDS
 
 
 @dataclass
@@ -461,6 +463,10 @@ class ConfigLoader:
         poll = int(raw_runtime.get("poll_interval_seconds", DEFAULT_POLL_SECONDS))
         target = int(raw_runtime.get("valid_target_per_repo", DEFAULT_DAILY_VALID_TARGET))
         stop_when_done = bool(raw_runtime.get("stop_when_targets_met", True))
+        sync_local_git_source = bool(raw_runtime.get("sync_local_git_source", True))
+        local_git_sync_interval = int(
+            raw_runtime.get("local_git_sync_interval_seconds", poll)
+        )
 
         return RuntimeConfig(
             state_dir=state_dir,
@@ -471,6 +477,8 @@ class ConfigLoader:
             poll_interval_seconds=max(10, poll),
             valid_target_per_repo=max(1, target),
             stop_when_targets_met=stop_when_done,
+            sync_local_git_source=sync_local_git_source,
+            local_git_sync_interval_seconds=max(0, local_git_sync_interval),
         )
 
     def _parse_proof(self, raw_proof: Any) -> ProofConfig:
@@ -631,8 +639,16 @@ class GitHubClient:
 class CodebaseManager:
     """Clones or refreshes the target codebase before each audit run."""
 
-    def __init__(self, clone_root: Path):
+    def __init__(
+        self,
+        clone_root: Path,
+        sync_local_git_source: bool = True,
+        local_git_sync_interval_seconds: int = DEFAULT_POLL_SECONDS,
+    ):
         self._clone_root = clone_root
+        self._sync_local_git_source = sync_local_git_source
+        self._local_git_sync_interval_seconds = max(0, int(local_git_sync_interval_seconds))
+        self._last_sync_attempts: Dict[str, float] = {}
         ensure_dir(self._clone_root)
 
     def prepare(self, source: str) -> Path:
@@ -641,6 +657,8 @@ class CodebaseManager:
         source_path = Path(source).expanduser().resolve()
         if not source_path.exists():
             raise FileNotFoundError(f"Source path does not exist: {source_path}")
+        if self._sync_local_git_source:
+            self._refresh_local_checkout(source_path)
         return source_path
 
     def _prepare_clone(self, source_url: str) -> Path:
@@ -654,12 +672,115 @@ class CodebaseManager:
         self._run(["git", "-C", str(clone_path), "pull", "--ff-only"])
         return clone_path
 
+    def _refresh_local_checkout(self, source_path: Path) -> None:
+        source_key = str(source_path)
+        if not self._sync_due(source_key):
+            return
+        if not self._is_git_worktree(source_path):
+            return
+
+        try:
+            self._run(["git", "-C", str(source_path), "fetch", "--all", "--prune"])
+        except RuntimeError as exc:
+            print(f"[source] git fetch failed for {source_path}: {exc}")
+            return
+
+        if self._has_tracked_changes(source_path):
+            print(f"[source] tracked local changes detected; skipping git pull for {source_path}")
+            return
+
+        branch = self._current_branch(source_path)
+        if not branch:
+            print(f"[source] detached HEAD; skipping git pull for {source_path}")
+            return
+
+        upstream_ref = self._upstream_ref(source_path)
+        if not upstream_ref:
+            print(f"[source] no upstream configured for {source_path}; fetched only")
+            return
+
+        try:
+            local_head = self._run_capture(["git", "-C", str(source_path), "rev-parse", "HEAD"])
+            upstream_head = self._run_capture(["git", "-C", str(source_path), "rev-parse", upstream_ref])
+        except RuntimeError as exc:
+            print(f"[source] unable to compare local checkout against upstream for {source_path}: {exc}")
+            return
+
+        if local_head == upstream_head:
+            return
+
+        try:
+            self._run(["git", "-C", str(source_path), "pull", "--ff-only"])
+        except RuntimeError as exc:
+            print(f"[source] git pull failed for {source_path}: {exc}")
+            return
+
+        print(f"[source] pulled latest changes for {source_path}")
+
+    def _sync_due(self, source_key: str) -> bool:
+        if self._local_git_sync_interval_seconds == 0:
+            return True
+        now = time.monotonic()
+        last_attempt = self._last_sync_attempts.get(source_key)
+        if last_attempt is not None and now - last_attempt < self._local_git_sync_interval_seconds:
+            return False
+        self._last_sync_attempts[source_key] = now
+        return True
+
+    def _is_git_worktree(self, source_path: Path) -> bool:
+        try:
+            return self._run_capture(
+                ["git", "-C", str(source_path), "rev-parse", "--is-inside-work-tree"]
+            ) == "true"
+        except RuntimeError:
+            return False
+
+    def _has_tracked_changes(self, source_path: Path) -> bool:
+        try:
+            status = self._run_capture(
+                ["git", "-C", str(source_path), "status", "--porcelain", "--untracked-files=no"]
+            )
+        except RuntimeError:
+            return True
+        return bool(status.strip())
+
+    def _current_branch(self, source_path: Path) -> Optional[str]:
+        try:
+            return self._run_capture(
+                ["git", "-C", str(source_path), "symbolic-ref", "--quiet", "--short", "HEAD"]
+            )
+        except RuntimeError:
+            return None
+
+    def _upstream_ref(self, source_path: Path) -> Optional[str]:
+        try:
+            return self._run_capture(
+                [
+                    "git",
+                    "-C",
+                    str(source_path),
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{u}",
+                ]
+            )
+        except RuntimeError:
+            return None
+
     def _run(self, cmd: Sequence[str]) -> None:
+        self._run_process(cmd)
+
+    def _run_capture(self, cmd: Sequence[str]) -> str:
+        return self._run_process(cmd).stdout.strip()
+
+    def _run_process(self, cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"Command failed ({' '.join(cmd)}):\nstdout={proc.stdout}\nstderr={proc.stderr}"
             )
+        return proc
 
 
 class DetectorRunner:
@@ -2646,7 +2767,11 @@ class AuditOrchestrator:
         ensure_dir(config.runtime.state_dir)
         ensure_dir(config.runtime.clone_root)
 
-        self._codebase_manager = CodebaseManager(config.runtime.clone_root)
+        self._codebase_manager = CodebaseManager(
+            config.runtime.clone_root,
+            sync_local_git_source=config.runtime.sync_local_git_source,
+            local_git_sync_interval_seconds=config.runtime.local_git_sync_interval_seconds,
+        )
         self._dedup_store = LocalDedupStore(config.runtime.dedup_db)
         self._proof_manager = ProofManager(config.proof, config.runtime.state_dir)
 

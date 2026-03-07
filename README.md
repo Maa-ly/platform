@@ -103,6 +103,12 @@ Continuous daily loop:
 python bug_audit_system.py --config config.yaml --source https://github.com/example/target-repo.git
 ```
 
+Local git checkout sync:
+
+- If `--source` points at a local git worktree such as a `cortex-ide` checkout, the runner now does `git fetch --all --prune` and `git pull --ff-only` before each audit cycle when the checkout is clean and has an upstream branch.
+- Dirty tracked changes are never overwritten; those runs log a skip instead of forcing a pull.
+- Configure this under `runtime.sync_local_git_source` and `runtime.local_git_sync_interval_seconds` (defaults: enabled, interval matches the poll interval).
+
 Default static detector script included:
 
 - `/Users/odeili/Projects/algo_platform/detectors/cortex_static_triage_detector.py`

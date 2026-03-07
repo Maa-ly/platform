@@ -9,6 +9,10 @@ runtime:
   poll_interval_seconds: 120
   valid_target_per_repo: 25
   stop_when_targets_met: true
+  # When --source points at a local git checkout (for example a local cortex-ide clone),
+  # fetch and fast-forward it before each audit cycle when the worktree is clean.
+  sync_local_git_source: true
+  local_git_sync_interval_seconds: 120
 
 submission:
   # Enforced issue title format.
