@@ -183,3 +183,10 @@ Auto GUI proof capture:
 
 `bug_audit_system.py` checks config file modification time every cycle and hot-reloads automatically.
 # platform
+
+
+m   
+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
+
+g
+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
