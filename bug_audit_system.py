@@ -8,6 +8,7 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import logging
 import math
 import mimetypes
 import os
@@ -24,13 +25,23 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
+logger = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
 DEFAULT_EXTERNAL_REPO = "PlatformNetwork/bounty-challenge"
-DEFAULT_DAILY_VALID_TARGET = 25
+DEFAULT_DAILY_VALID_TARGET = 10
 DEFAULT_POLL_SECONDS = 120
 DEFAULT_TITLE_TEMPLATE = "[BUG] [alpha] {title}"
 INVALID_LABELS = {"invalid", "duplicate", "duplicated"}
+
+# --- Rate limit safety constants ---
+# GitHub secondary rate limit: max 80 content-creation requests/min, 500/hour.
+# We stay well under these to avoid triggering anti-spam flags.
+MAX_ISSUES_PER_HOUR = 20
+MIN_SECONDS_BETWEEN_SUBMISSIONS = 90
+# GitHub Search API: max 30 requests/min for authenticated users.
+MAX_SEARCH_QUERIES_PER_CANDIDATE = 6
+MIN_SECONDS_BETWEEN_SEARCH_CALLS = 2.5
 
 LOW_CONFIDENCE_FINDING_ID_PREFIXES: Tuple[str, ...] = (
     "shortcut-",
@@ -112,7 +123,7 @@ VALIDATED_VIDEO_CLASS_RULES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
             "blank",
             "no visual feedback",
             "still says",
-            "false \"no",
+            'false "no',
             "false 'no",
             "shows 0.0",
             "no terminal instance",
@@ -150,6 +161,89 @@ def normalize_text(text: str) -> str:
     return " ".join((text or "").strip().lower().split())
 
 
+def is_windows() -> bool:
+    return os.name == "nt"
+
+
+def find_python_cmd() -> str:
+    """Return a working Python 3 command name for the current platform."""
+    import shutil as _shutil
+
+    for candidate in ("python3", "python", "py"):
+        if _shutil.which(candidate):
+            return candidate
+    return "python3"
+
+
+def run_shell_cmd(
+    cmd_str: str,
+    *,
+    env: Optional[Dict[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a shell command string cross-platform.
+
+    On Unix: uses /bin/sh (supports VAR=value command syntax).
+    On Windows: parses inline VAR=value prefixes out of the command,
+    merges them into the env dict, and runs via cmd.exe.
+    """
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+
+    if is_windows():
+        # Parse leading VAR=value pairs and strip Unix-isms.
+        parts = cmd_str
+        # Strip Unix null device redirections
+        parts = re.sub(r">[/\\]dev[/\\]null\s*2>&1", "", parts)
+        parts = re.sub(r"2>[/\\]dev[/\\]null", "", parts)
+        parts = re.sub(r"\|\|\s*true;?", "", parts)
+        # Extract leading VAR=value tokens
+        tokens = parts.split()
+        actual_cmd_tokens: List[str] = []
+        for token in tokens:
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", token)
+            if m and not actual_cmd_tokens:
+                key, val = m.group(1), m.group(2)
+                # Expand $VAR references inside the value
+                val = re.sub(
+                    r"\$([A-Za-z_][A-Za-z0-9_]*)",
+                    lambda mv: run_env.get(mv.group(1), ""),
+                    val,
+                )
+                run_env[key] = val
+            else:
+                actual_cmd_tokens.append(token)
+        # Expand $VAR in the remaining command tokens
+        expanded: List[str] = []
+        for t in actual_cmd_tokens:
+            expanded.append(
+                re.sub(
+                    r"\$([A-Za-z_][A-Za-z0-9_]*)",
+                    lambda mv: run_env.get(mv.group(1), ""),
+                    t,
+                )
+            )
+        # Replace python3 with working python on Windows
+        if expanded and expanded[0] == "python3":
+            expanded[0] = find_python_cmd()
+        final_cmd = " ".join(expanded)
+        return subprocess.run(
+            final_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            env=run_env,
+        )
+    else:
+        return subprocess.run(
+            cmd_str,
+            shell=True,
+            capture_output=True,
+            text=True,
+            env=run_env,
+        )
+
+
 def strict_video_proof_enabled() -> bool:
     value = os.environ.get("CORTEX_STRICT_VIDEO_PROOF", "1").strip().lower()
     return value not in {"0", "false", "no"}
@@ -162,7 +256,9 @@ def only_validated_video_families_enabled() -> bool:
 
 def normalize_title_template(template: str) -> str:
     value = str(template or "").strip()
-    if re.fullmatch(r"\[\s*bug\s*\]\s*\[\s*alpha\s*\]\s*\{title\}", value, flags=re.IGNORECASE):
+    if re.fullmatch(
+        r"\[\s*bug\s*\]\s*\[\s*alpha\s*\]\s*\{title\}", value, flags=re.IGNORECASE
+    ):
         return DEFAULT_TITLE_TEMPLATE
     return value
 
@@ -194,7 +290,11 @@ def sha256_file(path: Path) -> str:
 
 def is_git_url(source: str) -> bool:
     lowered = source.lower()
-    return lowered.startswith("https://") or lowered.startswith("http://") or lowered.startswith("git@")
+    return (
+        lowered.startswith("https://")
+        or lowered.startswith("http://")
+        or lowered.startswith("git@")
+    )
 
 
 def normalize_repo_ref(value: str) -> str:
@@ -265,6 +365,9 @@ class RuntimeConfig:
     stop_when_targets_met: bool = True
     sync_local_git_source: bool = True
     local_git_sync_interval_seconds: int = DEFAULT_POLL_SECONDS
+    # Throttle settings to stay within GitHub rate limits.
+    seconds_between_submissions: int = MIN_SECONDS_BETWEEN_SUBMISSIONS
+    max_issues_per_hour: int = MAX_ISSUES_PER_HOUR
 
 
 @dataclass
@@ -336,13 +439,19 @@ class ConfigLoader:
         runtime = self._parse_runtime(raw.get("runtime", {}))
         proof = self._parse_proof(raw.get("proof", {}))
         submission = self._parse_submission(raw.get("submission", {}))
-        repositories = self._parse_repositories(raw.get("repositories", []), submission.issue_repo)
+        repositories = self._parse_repositories(
+            raw.get("repositories", []), submission.issue_repo
+        )
 
         external = raw.get("external_dedup", {}) or {}
-        external_repo = normalize_repo_ref(str(external.get("repo", DEFAULT_EXTERNAL_REPO)))
+        external_repo = normalize_repo_ref(
+            str(external.get("repo", DEFAULT_EXTERNAL_REPO))
+        )
         external_token_env = external.get("token_env")
         if "/" not in external_repo:
-            raise ConfigError("external_dedup.repo must be in 'owner/repo' format or GitHub repo/issues URL")
+            raise ConfigError(
+                "external_dedup.repo must be in 'owner/repo' format or GitHub repo/issues URL"
+            )
 
         if len(repositories) != 6:
             raise ConfigError("Exactly 6 repositories must be configured")
@@ -381,12 +490,18 @@ class ConfigLoader:
             )
         return prompts
 
-    def _parse_repositories(self, raw_repos: Any, default_issue_repo: str) -> List[RepoConfig]:
+    def _parse_repositories(
+        self, raw_repos: Any, default_issue_repo: str
+    ) -> List[RepoConfig]:
         if not isinstance(raw_repos, list) or not raw_repos:
             raise ConfigError("repositories must be a non-empty list")
 
         issue_parts = default_issue_repo.split("/", 1)
-        if len(issue_parts) != 2 or not issue_parts[0].strip() or not issue_parts[1].strip():
+        if (
+            len(issue_parts) != 2
+            or not issue_parts[0].strip()
+            or not issue_parts[1].strip()
+        ):
             raise ConfigError("submission.issue_repo must be in 'owner/repo' format")
         default_owner = issue_parts[0].strip()
         default_repo = issue_parts[1].strip()
@@ -398,7 +513,9 @@ class ConfigLoader:
 
             github_name = str(entry.get("github_name", "")).strip()
             if not github_name:
-                raise ConfigError("Repository entries require github_name (submitter identity)")
+                raise ConfigError(
+                    "Repository entries require github_name (submitter identity)"
+                )
 
             issue_repo = str(entry.get("issue_repo", "")).strip()
             owner = str(entry.get("owner", "")).strip()
@@ -429,7 +546,10 @@ class ConfigLoader:
                 repo_name = default_repo
 
             name = str(entry.get("name", "")).strip() or github_name
-            token = str(entry.get("token", "")).strip() or str(entry.get("token_env", "")).strip()
+            token = (
+                str(entry.get("token", "")).strip()
+                or str(entry.get("token_env", "")).strip()
+            )
             labels = entry.get("labels", []) or []
             if not owner or not repo_name or not token:
                 raise ConfigError(
@@ -459,9 +579,15 @@ class ConfigLoader:
     def _parse_runtime(self, raw_runtime: Any) -> RuntimeConfig:
         if not isinstance(raw_runtime, dict):
             raise ConfigError("runtime must be a mapping")
-        state_dir = Path(str(raw_runtime.get("state_dir", ".audit_state"))).expanduser().resolve()
+        state_dir = (
+            Path(str(raw_runtime.get("state_dir", ".audit_state")))
+            .expanduser()
+            .resolve()
+        )
         poll = int(raw_runtime.get("poll_interval_seconds", DEFAULT_POLL_SECONDS))
-        target = int(raw_runtime.get("valid_target_per_repo", DEFAULT_DAILY_VALID_TARGET))
+        target = int(
+            raw_runtime.get("valid_target_per_repo", DEFAULT_DAILY_VALID_TARGET)
+        )
         stop_when_done = bool(raw_runtime.get("stop_when_targets_met", True))
         sync_local_git_source = bool(raw_runtime.get("sync_local_git_source", True))
         local_git_sync_interval = int(
@@ -479,13 +605,23 @@ class ConfigLoader:
             stop_when_targets_met=stop_when_done,
             sync_local_git_source=sync_local_git_source,
             local_git_sync_interval_seconds=max(0, local_git_sync_interval),
+            seconds_between_submissions=max(
+                MIN_SECONDS_BETWEEN_SUBMISSIONS,
+                int(raw_runtime.get("seconds_between_submissions", MIN_SECONDS_BETWEEN_SUBMISSIONS)),
+            ),
+            max_issues_per_hour=min(
+                MAX_ISSUES_PER_HOUR,
+                max(1, int(raw_runtime.get("max_issues_per_hour", MAX_ISSUES_PER_HOUR))),
+            ),
         )
 
     def _parse_proof(self, raw_proof: Any) -> ProofConfig:
         if not isinstance(raw_proof, dict):
             raise ConfigError("proof must be a mapping")
 
-        image_ext = raw_proof.get("allowed_image_extensions", [".png", ".jpg", ".jpeg", ".gif"])
+        image_ext = raw_proof.get(
+            "allowed_image_extensions", [".png", ".jpg", ".jpeg", ".gif"]
+        )
         video_ext = raw_proof.get("allowed_video_extensions", [".mp4", ".mov", ".webm"])
         if not isinstance(image_ext, list) or not isinstance(video_ext, list):
             raise ConfigError("proof extension lists must be arrays")
@@ -534,13 +670,17 @@ class ConfigLoader:
         title_template = normalize_title_template(
             str(raw_submission.get("title_template", DEFAULT_TITLE_TEMPLATE)).strip()
         )
-        issue_repo = normalize_repo_ref(str(raw_submission.get("issue_repo", DEFAULT_EXTERNAL_REPO)).strip())
+        issue_repo = normalize_repo_ref(
+            str(raw_submission.get("issue_repo", DEFAULT_EXTERNAL_REPO)).strip()
+        )
         if not title_template:
             raise ConfigError("submission.title_template cannot be empty")
         if "{title}" not in title_template:
             raise ConfigError("submission.title_template must contain {title}")
         if "/" not in issue_repo:
-            raise ConfigError("submission.issue_repo must be in 'owner/repo' format or GitHub repo/issues URL")
+            raise ConfigError(
+                "submission.issue_repo must be in 'owner/repo' format or GitHub repo/issues URL"
+            )
         return SubmissionConfig(title_template=title_template, issue_repo=issue_repo)
 
 
@@ -563,7 +703,9 @@ class ConfigReloader:
 
 
 class GitHubClient:
-    """Small wrapper around GitHub REST API."""
+    """Small wrapper around GitHub REST API with rate-limit awareness."""
+
+    _MAX_RETRIES = 3
 
     def __init__(self, token: str = ""):
         normalized_token = token.strip()
@@ -571,11 +713,21 @@ class GitHubClient:
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "audit-bot/1.0",
+            "User-Agent": "platform-audit/0.1",
         }
         if normalized_token:
             headers["Authorization"] = f"Bearer {normalized_token}"
         self._session.headers.update(headers)
+
+    @staticmethod
+    def _wait_for_rate_limit(response: requests.Response) -> None:
+        """Sleep if rate-limit headers indicate we should back off."""
+        remaining = response.headers.get("x-ratelimit-remaining")
+        reset_ts = response.headers.get("x-ratelimit-reset")
+        if remaining is not None and int(remaining) <= 1 and reset_ts is not None:
+            wait = max(0, int(reset_ts) - int(time.time())) + 1
+            logger.warning("Rate-limit nearly exhausted – sleeping %ds", wait)
+            time.sleep(min(wait, 120))
 
     def request(
         self,
@@ -585,8 +737,27 @@ class GitHubClient:
         params: Optional[Dict[str, Any]] = None,
         json_body: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        url = path_or_url if path_or_url.startswith("http") else f"{GITHUB_API_BASE}{path_or_url}"
-        response = self._session.request(method, url, params=params, json=json_body, timeout=30)
+        url = (
+            path_or_url
+            if path_or_url.startswith("http")
+            else f"{GITHUB_API_BASE}{path_or_url}"
+        )
+        for attempt in range(self._MAX_RETRIES):
+            response = self._session.request(
+                method, url, params=params, json=json_body, timeout=30
+            )
+            # Respect rate-limit headers on every response.
+            self._wait_for_rate_limit(response)
+            if response.status_code in (429, 403):
+                retry_after = response.headers.get("retry-after")
+                wait = int(retry_after) if retry_after else (2 ** attempt) * 10
+                logger.warning(
+                    "Rate-limited (%d) on %s – retrying in %ds (attempt %d/%d)",
+                    response.status_code, url, wait, attempt + 1, self._MAX_RETRIES,
+                )
+                time.sleep(min(wait, 120))
+                continue
+            break
         if response.status_code >= 400:
             raise GitHubAPIError(
                 f"GitHub API error {response.status_code} for {url}: {response.text[:400]}"
@@ -632,7 +803,9 @@ class GitHubClient:
     def download_raw(self, url: str) -> str:
         response = self._session.get(url, timeout=30)
         if response.status_code >= 400:
-            raise GitHubAPIError(f"Failed to download template from {url}: {response.status_code}")
+            raise GitHubAPIError(
+                f"Failed to download template from {url}: {response.status_code}"
+            )
         return response.text
 
 
@@ -647,7 +820,9 @@ class CodebaseManager:
     ):
         self._clone_root = clone_root
         self._sync_local_git_source = sync_local_git_source
-        self._local_git_sync_interval_seconds = max(0, int(local_git_sync_interval_seconds))
+        self._local_git_sync_interval_seconds = max(
+            0, int(local_git_sync_interval_seconds)
+        )
         self._last_sync_attempts: Dict[str, float] = {}
         ensure_dir(self._clone_root)
 
@@ -686,7 +861,9 @@ class CodebaseManager:
             return
 
         if self._has_tracked_changes(source_path):
-            print(f"[source] tracked local changes detected; skipping git pull for {source_path}")
+            print(
+                f"[source] tracked local changes detected; skipping git pull for {source_path}"
+            )
             return
 
         branch = self._current_branch(source_path)
@@ -700,10 +877,16 @@ class CodebaseManager:
             return
 
         try:
-            local_head = self._run_capture(["git", "-C", str(source_path), "rev-parse", "HEAD"])
-            upstream_head = self._run_capture(["git", "-C", str(source_path), "rev-parse", upstream_ref])
+            local_head = self._run_capture(
+                ["git", "-C", str(source_path), "rev-parse", "HEAD"]
+            )
+            upstream_head = self._run_capture(
+                ["git", "-C", str(source_path), "rev-parse", upstream_ref]
+            )
         except RuntimeError as exc:
-            print(f"[source] unable to compare local checkout against upstream for {source_path}: {exc}")
+            print(
+                f"[source] unable to compare local checkout against upstream for {source_path}: {exc}"
+            )
             return
 
         if local_head == upstream_head:
@@ -722,23 +905,42 @@ class CodebaseManager:
             return True
         now = time.monotonic()
         last_attempt = self._last_sync_attempts.get(source_key)
-        if last_attempt is not None and now - last_attempt < self._local_git_sync_interval_seconds:
+        if (
+            last_attempt is not None
+            and now - last_attempt < self._local_git_sync_interval_seconds
+        ):
             return False
         self._last_sync_attempts[source_key] = now
         return True
 
     def _is_git_worktree(self, source_path: Path) -> bool:
         try:
-            return self._run_capture(
-                ["git", "-C", str(source_path), "rev-parse", "--is-inside-work-tree"]
-            ) == "true"
+            return (
+                self._run_capture(
+                    [
+                        "git",
+                        "-C",
+                        str(source_path),
+                        "rev-parse",
+                        "--is-inside-work-tree",
+                    ]
+                )
+                == "true"
+            )
         except RuntimeError:
             return False
 
     def _has_tracked_changes(self, source_path: Path) -> bool:
         try:
             status = self._run_capture(
-                ["git", "-C", str(source_path), "status", "--porcelain", "--untracked-files=no"]
+                [
+                    "git",
+                    "-C",
+                    str(source_path),
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=no",
+                ]
             )
         except RuntimeError:
             return True
@@ -747,7 +949,15 @@ class CodebaseManager:
     def _current_branch(self, source_path: Path) -> Optional[str]:
         try:
             return self._run_capture(
-                ["git", "-C", str(source_path), "symbolic-ref", "--quiet", "--short", "HEAD"]
+                [
+                    "git",
+                    "-C",
+                    str(source_path),
+                    "symbolic-ref",
+                    "--quiet",
+                    "--short",
+                    "HEAD",
+                ]
             )
         except RuntimeError:
             return None
@@ -786,7 +996,9 @@ class CodebaseManager:
 class DetectorRunner:
     """Executes prompt-specific detector commands and parses candidate findings."""
 
-    def run(self, prompts: Sequence[PromptConfig], repo_path: Path) -> List[BugCandidate]:
+    def run(
+        self, prompts: Sequence[PromptConfig], repo_path: Path
+    ) -> List[BugCandidate]:
         findings: List[BugCandidate] = []
         for prompt in prompts:
             items = self._run_prompt(prompt, repo_path)
@@ -804,7 +1016,7 @@ class DetectorRunner:
             prompt_id=prompt.id,
             prompt=prompt.prompt,
         )
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env)
+        proc = run_shell_cmd(cmd, env=env)
         if proc.returncode != 0:
             print(f"[detector] prompt={prompt.id} failed: {proc.stderr.strip()}")
             return []
@@ -853,7 +1065,9 @@ class DetectorRunner:
             raise ConfigError("proof_artifacts must be a list")
 
         if not title or not description or not impact or not native_gui:
-            raise ConfigError("candidate requires title, description, impact, and native_gui")
+            raise ConfigError(
+                "candidate requires title, description, impact, and native_gui"
+            )
 
         steps = [str(x).strip() for x in reproduction_steps if str(x).strip()]
         if not steps:
@@ -912,7 +1126,9 @@ class LocalDedupStore:
                 """
             )
 
-    def try_reserve(self, fingerprint: str, candidate: BugCandidate, source_repo: str) -> bool:
+    def try_reserve(
+        self, fingerprint: str, candidate: BugCandidate, source_repo: str
+    ) -> bool:
         now = utc_now()
         with self._connect() as conn:
             try:
@@ -946,13 +1162,10 @@ class LocalDedupStore:
                     return False
 
                 status, note = str(row[0]), str(row[1])
-                retryable = (
-                    status == "skipped"
-                    and (
-                        note.startswith("proof_validation_failed:")
-                        or note.startswith("issue_submit_failed:")
-                        or note.startswith("external_dedup_error:")
-                    )
+                retryable = status == "skipped" and (
+                    note.startswith("proof_validation_failed:")
+                    or note.startswith("issue_submit_failed:")
+                    or note.startswith("external_dedup_error:")
                 )
                 if not retryable:
                     return False
@@ -1010,11 +1223,15 @@ class ExternalDedupChecker:
         cached = self._search_cache.get(key)
         if cached is not None:
             return cached
+        # Throttle search calls to stay under GitHub's 30 requests/minute limit.
+        time.sleep(MIN_SECONDS_BETWEEN_SEARCH_CALLS)
         try:
             payload = self._client.search_issues(query, per_page=per_page)
         except GitHubAPIError as exc:
             message = str(exc).lower()
-            rate_limited = "api rate limit exceeded" in message and "/search/issues" in message
+            rate_limited = (
+                "api rate limit exceeded" in message and "/search/issues" in message
+            )
             if not rate_limited:
                 raise
             if self._fallback_client is None:
@@ -1023,7 +1240,9 @@ class ExternalDedupChecker:
         self._search_cache[key] = payload
         return payload
 
-    def is_duplicate(self, candidate: BugCandidate, fingerprint: str) -> Tuple[bool, Optional[str]]:
+    def is_duplicate(
+        self, candidate: BugCandidate, fingerprint: str
+    ) -> Tuple[bool, Optional[str]]:
         title_query = f'repo:{self._repository} is:issue "{candidate.title}"'
         if self._has_match(title_query):
             issue_url = self._first_issue_url(title_query)
@@ -1135,7 +1354,9 @@ class ExternalDedupChecker:
         )
 
     def _event_tokens(self, text: str) -> List[str]:
-        pattern = re.compile(r"\b[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9_.-]*\b", re.IGNORECASE)
+        pattern = re.compile(
+            r"\b[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9_.-]*\b", re.IGNORECASE
+        )
         allowed_prefixes = {
             "activity",
             "activitybar",
@@ -1355,7 +1576,11 @@ class ExternalDedupChecker:
             seen.add(token)
             tokens.append(token)
 
-        scored = sorted(tokens, key=lambda token: (len(token), any(ch.isdigit() for ch in token)), reverse=True)
+        scored = sorted(
+            tokens,
+            key=lambda token: (len(token), any(ch.isdigit() for ch in token)),
+            reverse=True,
+        )
         return scored[:5]
 
     def _strict_queries(self, strict_terms: Sequence[str]) -> List[str]:
@@ -1379,7 +1604,9 @@ class ExternalDedupChecker:
         query: str,
         strict_terms: Sequence[str],
     ) -> Optional[str]:
-        wanted = [str(term).strip().lower() for term in strict_terms if str(term).strip()]
+        wanted = [
+            str(term).strip().lower() for term in strict_terms if str(term).strip()
+        ]
         if not wanted:
             return None
 
@@ -1441,7 +1668,9 @@ class ProofManager:
             if generated:
                 candidate.proof_artifacts = generated
             else:
-                proof_kind = "video" if strict_video_proof_enabled() else "screenshot/video"
+                proof_kind = (
+                    "video" if strict_video_proof_enabled() else "screenshot/video"
+                )
                 raise ValueError(
                     f"No proof_artifacts provided. Attach native GUI {proof_kind} "
                     "before submission."
@@ -1478,7 +1707,11 @@ class ProofManager:
         configured = os.environ.get("CORTEX_WSL_VIDEO_ACTIONS_FILE", "").strip()
         if configured:
             path_candidates.append(Path(configured).expanduser().resolve())
-        path_candidates.append(Path(__file__).resolve().parent / "detectors" / "cortex_wsl_video_actions.json")
+        path_candidates.append(
+            Path(__file__).resolve().parent
+            / "detectors"
+            / "cortex_wsl_video_actions.json"
+        )
 
         for profile_path in path_candidates:
             if not profile_path.exists():
@@ -1492,7 +1725,9 @@ class ProofManager:
             ids = {
                 str(key).strip().lower()
                 for key, value in payload.items()
-                if str(key).strip() and not str(key).startswith("_") and isinstance(value, list)
+                if str(key).strip()
+                and not str(key).startswith("_")
+                and isinstance(value, list)
             }
             if ids:
                 return ids
@@ -1507,7 +1742,11 @@ class ProofManager:
         if not finding_id:
             return
 
-        matching = [artifact for artifact in artifacts if _artifact_matches_finding(artifact, finding_id)]
+        matching = [
+            artifact
+            for artifact in artifacts
+            if _artifact_matches_finding(artifact, finding_id)
+        ]
         if not matching:
             raise ValueError(
                 "Proof artifacts are not finding-specific. "
@@ -1542,9 +1781,12 @@ class ProofManager:
         screenshots = [
             artifact
             for artifact in matching
-            if artifact.media_type == "image" and _artifact_ext(artifact) in {".png", ".jpg", ".jpeg"}
+            if artifact.media_type == "image"
+            and _artifact_ext(artifact) in {".png", ".jpg", ".jpeg"}
         ]
-        has_preclick = any(_artifact_stem(artifact).endswith(".preclick") for artifact in screenshots)
+        has_preclick = any(
+            _artifact_stem(artifact).endswith(".preclick") for artifact in screenshots
+        )
         if not has_preclick:
             raise ValueError(
                 "Interactive finding requires a pre-action screenshot (*.preclick.png) before the bug reproduction step."
@@ -1553,7 +1795,9 @@ class ProofManager:
         post_action = []
         for artifact in screenshots:
             stem = _artifact_stem(artifact)
-            if stem == finding_id or re.match(rf"^{re.escape(finding_id)}\.step\d+$", stem):
+            if stem == finding_id or re.match(
+                rf"^{re.escape(finding_id)}\.step\d+$", stem
+            ):
                 post_action.append(artifact)
 
         if not post_action:
@@ -1594,7 +1838,9 @@ class ProofManager:
         if not self._proof_config.auto_capture_cmd:
             return []
 
-        finding_id = str(candidate.raw.get("finding_id", "")).strip() or fingerprint[:16]
+        finding_id = (
+            str(candidate.raw.get("finding_id", "")).strip() or fingerprint[:16]
+        )
         evidence_file = str(candidate.raw.get("evidence_file", "")).strip()
         evidence_line = str(candidate.raw.get("evidence_line", "")).strip()
         cmd = self._proof_config.auto_capture_cmd.format(
@@ -1604,7 +1850,7 @@ class ProofManager:
             evidence_line=evidence_line or "1",
             title=shlex.quote(candidate.title),
         )
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        proc = run_shell_cmd(cmd)
         if proc.returncode != 0:
             print(
                 f"[proof] auto-capture failed for '{candidate.title}': "
@@ -1680,8 +1926,10 @@ class ProofManager:
         )
 
     def _upload_artifact(self, artifact_path: Path) -> Tuple[str, Optional[str]]:
-        cmd = self._proof_config.upload_cmd.format(file_path=shlex.quote(str(artifact_path)))
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        cmd = self._proof_config.upload_cmd.format(
+            file_path=shlex.quote(str(artifact_path))
+        )
+        proc = run_shell_cmd(cmd)
         if proc.returncode != 0:
             raise ValueError(f"Artifact upload failed: {proc.stderr.strip()}")
 
@@ -1699,20 +1947,21 @@ class ProofManager:
                 if isinstance(parsed, dict):
                     json_payload = parsed
                     break
-            if first_url is None and (line.startswith("http://") or line.startswith("https://")):
+            if first_url is None and (
+                line.startswith("http://") or line.startswith("https://")
+            ):
                 first_url = line
 
         if json_payload:
             public_url = str(
-                json_payload.get("public_url")
-                or json_payload.get("url")
-                or ""
+                json_payload.get("public_url") or json_payload.get("url") or ""
             ).strip()
-            backup_url = str(
-                json_payload.get("backup_url")
-                or json_payload.get("gist_url")
-                or ""
-            ).strip() or None
+            backup_url = (
+                str(
+                    json_payload.get("backup_url") or json_payload.get("gist_url") or ""
+                ).strip()
+                or None
+            )
             if public_url.startswith("http://") or public_url.startswith("https://"):
                 return public_url, backup_url
 
@@ -1722,10 +1971,16 @@ class ProofManager:
 
     def _ensure_public_artifact_url(self, url: str, media_type: str) -> None:
         if not self._is_artifact_url_accessible(url, media_type):
-            raise ValueError("Proof URL is not publicly accessible or does not resolve to media content")
+            raise ValueError(
+                "Proof URL is not publicly accessible or does not resolve to media content"
+            )
 
     def _is_artifact_url_accessible(self, url: str, media_type: str) -> bool:
-        if os.environ.get("CORTEX_SKIP_PROOF_URL_CHECK", "").strip() in {"1", "true", "yes"}:
+        if os.environ.get("CORTEX_SKIP_PROOF_URL_CHECK", "").strip() in {
+            "1",
+            "true",
+            "yes",
+        }:
             return True
         try:
             response = requests.get(
@@ -1798,13 +2053,19 @@ class IssueTemplateManager:
             return self._cache[repo_cfg.name]
 
         if repo_cfg.issue_template:
-            spec = TemplateSpec(source="config", sections=self._parse_sections(repo_cfg.issue_template))
+            spec = TemplateSpec(
+                source="config", sections=self._parse_sections(repo_cfg.issue_template)
+            )
             self._cache[repo_cfg.name] = spec
             return spec
 
-        entries = client.list_directory(repo_cfg.owner, repo_cfg.repo, ".github/ISSUE_TEMPLATE")
+        entries = client.list_directory(
+            repo_cfg.owner, repo_cfg.repo, ".github/ISSUE_TEMPLATE"
+        )
         markdown_templates = [
-            x for x in entries if x.get("type") == "file" and str(x.get("name", "")).endswith(".md")
+            x
+            for x in entries
+            if x.get("type") == "file" and str(x.get("name", "")).endswith(".md")
         ]
         yaml_templates = [
             x
@@ -1905,7 +2166,11 @@ class DailyState:
 
         self.date = stored_day
         self.next_repo_index = int(payload.get("next_repo_index", 0))
-        self.repos = payload.get("repos", {}) if isinstance(payload.get("repos", {}), dict) else {}
+        self.repos = (
+            payload.get("repos", {})
+            if isinstance(payload.get("repos", {}), dict)
+            else {}
+        )
         for name in self._repo_names:
             self.repos.setdefault(name, {"submitted": []})
 
@@ -1955,7 +2220,9 @@ class DailyState:
                 return name
         return None
 
-    def record_submission(self, repo_name: str, issue_number: int, issue_url: str, fingerprint: str) -> None:
+    def record_submission(
+        self, repo_name: str, issue_number: int, issue_url: str, fingerprint: str
+    ) -> None:
         entry = {
             "number": int(issue_number),
             "url": issue_url,
@@ -1983,7 +2250,10 @@ class DailyState:
             for issue in submitted:
                 number = int(issue["number"])
                 payload = client.get_issue(repo_cfg.owner, repo_cfg.repo, number)
-                labels = [str(label.get("name", "")).lower() for label in payload.get("labels", [])]
+                labels = [
+                    str(label.get("name", "")).lower()
+                    for label in payload.get("labels", [])
+                ]
                 issue["labels"] = labels
                 issue["invalid"] = any(label in invalid_set for label in labels)
                 issue["updated_at"] = utc_now()
@@ -1999,7 +2269,9 @@ class DailyState:
         return self.total_count(repo_name) - self.invalid_count(repo_name)
 
     def all_targets_met(self, target_valid_count: int) -> bool:
-        return all(self.valid_count(name) >= target_valid_count for name in self._repo_names)
+        return all(
+            self.valid_count(name) >= target_valid_count for name in self._repo_names
+        )
 
     def build_summary(self, target_valid_count: int) -> Dict[str, Any]:
         repo_summary: Dict[str, Any] = {}
@@ -2050,7 +2322,9 @@ def format_issue_title(raw_title: str, title_template: str) -> str:
         return title_template.replace("{title}", "Untitled bug")
 
     if title_template == DEFAULT_TITLE_TEMPLATE:
-        normalized = re.sub(r"^\[\s*bug\s*\]\s*\[\s*alpha\s*\]\s*", "", title, flags=re.IGNORECASE).strip()
+        normalized = re.sub(
+            r"^\[\s*bug\s*\]\s*\[\s*alpha\s*\]\s*", "", title, flags=re.IGNORECASE
+        ).strip()
         if normalized != title:
             return title_template.replace("{title}", normalized or "Untitled bug")
 
@@ -2149,7 +2423,10 @@ def _artifact_matches_finding(artifact: ProofArtifact, finding_id: str) -> bool:
 
 
 def _finding_screenshot_priority(stem: str, finding_id: str) -> Tuple[int, int]:
-    if finding_id in {"titlebar-f5-pause-glyph-mismatch"} and stem == f"{finding_id}.focus":
+    if (
+        finding_id in {"titlebar-f5-pause-glyph-mismatch"}
+        and stem == f"{finding_id}.focus"
+    ):
         return 0, 0
     if stem == f"{finding_id}.step2":
         return 0, 2
@@ -2248,11 +2525,34 @@ def candidate_submission_score(candidate: BugCandidate) -> int:
     matched_video_class = matched_validated_video_class(candidate)
 
     score = 0
-    if any(token in text for token in ("loading editor", "stuck on `loading editor", "stuck on loading editor")):
+    if any(
+        token in text
+        for token in (
+            "loading editor",
+            "stuck on `loading editor",
+            "stuck on loading editor",
+        )
+    ):
         score += 5
-    if any(token in text for token in ("quick access", "quick open", "provider", "unreachable", "never registers")):
+    if any(
+        token in text
+        for token in (
+            "quick access",
+            "quick open",
+            "provider",
+            "unreachable",
+            "never registers",
+        )
+    ):
         score += 3
-    if any(token in text for token in ("wrong report target", "wrong default report repo", "issue reporter")):
+    if any(
+        token in text
+        for token in (
+            "wrong report target",
+            "wrong default report repo",
+            "issue reporter",
+        )
+    ):
         score += 2
     if _is_dynamic_bug(candidate):
         score += 1
@@ -2278,9 +2578,14 @@ def candidate_submission_score(candidate: BugCandidate) -> int:
         score -= 8
     if finding_id in LOW_CONFIDENCE_FINDING_IDS:
         score -= 6
-    if "no commands found" in text and not any(token in text for token in ("quick access", "quick open")):
+    if "no commands found" in text and not any(
+        token in text for token in ("quick access", "quick open")
+    ):
         score -= 6
-    if any(token in text for token in ("glyph", "iconography mismatch", "tooltip semantics")):
+    if any(
+        token in text
+        for token in ("glyph", "iconography mismatch", "tooltip semantics")
+    ):
         score -= 3
 
     return score
@@ -2288,13 +2593,20 @@ def candidate_submission_score(candidate: BugCandidate) -> int:
 
 def evaluate_submission_candidate(candidate: BugCandidate) -> Tuple[bool, str, int]:
     score = candidate_submission_score(candidate)
-    if os.environ.get("CORTEX_ALLOW_LOW_CONFIDENCE_FINDINGS", "").strip() in {"1", "true", "yes"}:
+    if os.environ.get("CORTEX_ALLOW_LOW_CONFIDENCE_FINDINGS", "").strip() in {
+        "1",
+        "true",
+        "yes",
+    }:
         return True, "quality_gate_override", score
 
     finding_id = _candidate_finding_id(candidate)
     matched_video_class = matched_validated_video_class(candidate)
     if strict_video_proof_enabled() and only_validated_video_families_enabled():
-        if finding_id not in HIGH_CONFIDENCE_VIDEO_FINDING_IDS and matched_video_class is None:
+        if (
+            finding_id not in HIGH_CONFIDENCE_VIDEO_FINDING_IDS
+            and matched_video_class is None
+        ):
             return False, f"unvalidated_video_family:{finding_id or 'missing'}", score
     if finding_id in LOW_CONFIDENCE_FINDING_IDS:
         return False, f"blocked_finding_id:{finding_id}", score
@@ -2323,7 +2635,9 @@ def evaluate_submission_candidate(candidate: BugCandidate) -> Tuple[bool, str, i
     if has_shortcut_chord and has_conflict_claim:
         return False, "blocked_shortcut_conflict_pattern", score
 
-    if "no commands found" in text and not any(token in text for token in ("quick access", "quick open")):
+    if "no commands found" in text and not any(
+        token in text for token in ("quick access", "quick open")
+    ):
         return False, "blocked_no_commands_found_artifact", score
 
     min_score = int(os.environ.get("CORTEX_MIN_SUBMISSION_SCORE", "1"))
@@ -2343,7 +2657,11 @@ def choose_inline_proof_artifact(
     videos = [a for a in artifacts if a.media_type == "video"]
     if strict_video_proof_enabled():
         if finding_id:
-            finding_videos = [video for video in videos if _artifact_matches_finding(video, finding_id)]
+            finding_videos = [
+                video
+                for video in videos
+                if _artifact_matches_finding(video, finding_id)
+            ]
             if finding_videos:
                 finding_videos.sort(key=_video_artifact_priority)
                 return finding_videos[0]
@@ -2353,7 +2671,11 @@ def choose_inline_proof_artifact(
         return None
 
     include_motion = os.environ.get("CORTEX_INCLUDE_MOTION_PROOF", "1").strip() != "0"
-    gifs = [a for a in artifacts if a.media_type == "image" and _artifact_ext(a) == ".gif"] if include_motion else []
+    gifs = (
+        [a for a in artifacts if a.media_type == "image" and _artifact_ext(a) == ".gif"]
+        if include_motion
+        else []
+    )
     screenshots = [
         a
         for a in artifacts
@@ -2364,10 +2686,15 @@ def choose_inline_proof_artifact(
         finding_screens = [
             shot
             for shot in screenshots
-            if _artifact_matches_finding(shot, finding_id) and not _artifact_stem(shot).endswith(".preclick")
+            if _artifact_matches_finding(shot, finding_id)
+            and not _artifact_stem(shot).endswith(".preclick")
         ]
         if finding_screens:
-            finding_screens.sort(key=lambda shot: _finding_screenshot_priority(_artifact_stem(shot), finding_id))
+            finding_screens.sort(
+                key=lambda shot: _finding_screenshot_priority(
+                    _artifact_stem(shot), finding_id
+                )
+            )
             return finding_screens[0]
 
     if _is_dynamic_bug(candidate):
@@ -2394,7 +2721,11 @@ def render_proof_section(
 ) -> str:
     proof_mode = os.environ.get("CORTEX_PROOF_MODE", "inline_gist").strip().lower()
     video_only = strict_video_proof_enabled()
-    proof_artifacts = [artifact for artifact in artifacts if artifact.media_type == "video"] if video_only else list(artifacts)
+    proof_artifacts = (
+        [artifact for artifact in artifacts if artifact.media_type == "video"]
+        if video_only
+        else list(artifacts)
+    )
     if proof_mode in {"gist", "gist_brackets", "gist-only", "gist_only"}:
         lines = [
             f"Native GUI: {native_gui}",
@@ -2444,10 +2775,16 @@ def render_proof_section(
         if a.media_type == "image" and _artifact_ext(a) in {".png", ".jpg", ".jpeg"}
     ]
     include_motion = os.environ.get("CORTEX_INCLUDE_MOTION_PROOF", "1").strip() != "0"
-    gifs = [a for a in artifacts if a.media_type == "image" and _artifact_ext(a) == ".gif"] if include_motion else []
+    gifs = (
+        [a for a in artifacts if a.media_type == "image" and _artifact_ext(a) == ".gif"]
+        if include_motion
+        else []
+    )
 
     if finding_id == "open-file-label-mismatch-folder-action":
-        preclick = next((a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None)
+        preclick = next(
+            (a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None
+        )
         dialog = next((a for a in image_shots if _artifact_stem(a) == finding_id), None)
         if dialog is None:
             dialog = next(
@@ -2461,13 +2798,26 @@ def render_proof_section(
                 None,
             )
         if dialog is None:
-            dialog = next((a for a in image_shots if not _artifact_stem(a).endswith(".preclick")), None)
+            dialog = next(
+                (a for a in image_shots if not _artifact_stem(a).endswith(".preclick")),
+                None,
+            )
 
         if preclick and dialog:
-            lines[1] = "Captured from the Cortex GUI with explicit click reproduction and resulting dialog state."
-            lines.append("![Click reproduction (Open File control)]({})".format(preclick.public_url))
+            lines[1] = (
+                "Captured from the Cortex GUI with explicit click reproduction and resulting dialog state."
+            )
+            lines.append(
+                "![Click reproduction (Open File control)]({})".format(
+                    preclick.public_url
+                )
+            )
             lines.append("")
-            lines.append("![Result after click (Open Folder dialog)]({})".format(dialog.public_url))
+            lines.append(
+                "![Result after click (Open Folder dialog)]({})".format(
+                    dialog.public_url
+                )
+            )
             if dialog.backup_url:
                 lines.append("")
                 lines.append(f"[Gist backup]({dialog.backup_url})")
@@ -2480,23 +2830,46 @@ def render_proof_section(
         "dashboard-activity-tab-renders-empty-sidebar",
         "roadmap-activity-tab-renders-empty-sidebar",
     }:
-        preclick = next((a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None)
+        preclick = next(
+            (a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None
+        )
         post_shots = [
             shot
             for shot in image_shots
-            if _artifact_matches_finding(shot, finding_id) and not _artifact_stem(shot).endswith(".preclick")
+            if _artifact_matches_finding(shot, finding_id)
+            and not _artifact_stem(shot).endswith(".preclick")
         ]
         if post_shots:
-            post_shots.sort(key=lambda shot: _finding_screenshot_priority(_artifact_stem(shot), finding_id))
+            post_shots.sort(
+                key=lambda shot: _finding_screenshot_priority(
+                    _artifact_stem(shot), finding_id
+                )
+            )
             post = post_shots[0]
             if preclick:
-                lines[1] = "Captured from the Cortex GUI with explicit click reproduction and resulting empty sidebar state."
-                lines.append("![Before click (normal sidebar state)]({})".format(preclick.public_url))
+                lines[1] = (
+                    "Captured from the Cortex GUI with explicit click reproduction and resulting empty sidebar state."
+                )
+                lines.append(
+                    "![Before click (normal sidebar state)]({})".format(
+                        preclick.public_url
+                    )
+                )
                 lines.append("")
-                lines.append("![After click (empty sidebar for selected tab)]({})".format(post.public_url))
+                lines.append(
+                    "![After click (empty sidebar for selected tab)]({})".format(
+                        post.public_url
+                    )
+                )
             else:
-                lines[1] = "Captured from the Cortex GUI after reproducing the finding-specific interaction."
-                lines.append("![After click (empty sidebar for selected tab)]({})".format(post.public_url))
+                lines[1] = (
+                    "Captured from the Cortex GUI after reproducing the finding-specific interaction."
+                )
+                lines.append(
+                    "![After click (empty sidebar for selected tab)]({})".format(
+                        post.public_url
+                    )
+                )
             if gifs:
                 lines.append("")
                 lines.append("![Inline motion proof]({})".format(gifs[0].public_url))
@@ -2509,11 +2882,19 @@ def render_proof_section(
         finding_shots = [
             shot
             for shot in image_shots
-            if _artifact_matches_finding(shot, finding_id) and not _artifact_stem(shot).endswith(".preclick")
+            if _artifact_matches_finding(shot, finding_id)
+            and not _artifact_stem(shot).endswith(".preclick")
         ]
         if finding_shots:
-            finding_shots.sort(key=lambda shot: _finding_screenshot_priority(_artifact_stem(shot), finding_id))
-            preclick = next((a for a in image_shots if _artifact_stem(a).endswith(".preclick")), None)
+            finding_shots.sort(
+                key=lambda shot: _finding_screenshot_priority(
+                    _artifact_stem(shot), finding_id
+                )
+            )
+            preclick = next(
+                (a for a in image_shots if _artifact_stem(a).endswith(".preclick")),
+                None,
+            )
             primary = finding_shots[0]
             follow_up = next(
                 (
@@ -2524,12 +2905,16 @@ def render_proof_section(
                 None,
             )
             if preclick is not None:
-                lines[1] = "Captured from the Cortex GUI with explicit before/after reproduction of the finding."
+                lines[1] = (
+                    "Captured from the Cortex GUI with explicit before/after reproduction of the finding."
+                )
                 lines.append(f"![Before reproduction]({preclick.public_url})")
                 lines.append("")
                 lines.append(f"![After reproduction (bug state)]({primary.public_url})")
             else:
-                lines[1] = "Captured from the Cortex GUI after reproducing the finding-specific interaction."
+                lines[1] = (
+                    "Captured from the Cortex GUI after reproducing the finding-specific interaction."
+                )
                 lines.append(f"![Screenshot proof]({primary.public_url})")
             if follow_up is not None:
                 lines.append("")
@@ -2582,8 +2967,13 @@ def render_issue_body(
         cleaned = sanitize_report_text(step) or str(step).strip()
         if cleaned:
             sanitized_steps.append(cleaned)
-    steps_text = "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(sanitized_steps))
-    actual_behavior = sanitize_report_text(str(candidate.raw.get("actual_behavior", "")).strip()) or summary_text
+    steps_text = "\n".join(
+        f"{idx + 1}. {step}" for idx, step in enumerate(sanitized_steps)
+    )
+    actual_behavior = (
+        sanitize_report_text(str(candidate.raw.get("actual_behavior", "")).strip())
+        or summary_text
+    )
     expected_behavior = (
         sanitize_report_text(str(candidate.raw.get("expected_behavior", "")).strip())
         or "Feature should route data and actions to the intended target and display accurate metadata."
@@ -2734,11 +3124,15 @@ class AuditOrchestrator:
                 print("[config] Reloaded configuration")
 
             self._daily_state.rollover_if_needed()
-            self._daily_state.sync_invalid_labels(self._repo_cfgs, self._clients, INVALID_LABELS)
+            self._daily_state.sync_invalid_labels(
+                self._repo_cfgs, self._clients, INVALID_LABELS
+            )
             self._daily_state.save()
             self._daily_state.save_summary(self._config.runtime.valid_target_per_repo)
 
-            if self._daily_state.all_targets_met(self._config.runtime.valid_target_per_repo):
+            if self._daily_state.all_targets_met(
+                self._config.runtime.valid_target_per_repo
+            ):
                 print("[status] Daily valid issue targets reached for all repositories")
                 if self._once or self._config.runtime.stop_when_targets_met:
                     break
@@ -2752,7 +3146,9 @@ class AuditOrchestrator:
             submissions = self._process_candidates(candidates, source_path)
             print(f"[audit] submitted {submissions} issue(s) this cycle")
 
-            self._daily_state.sync_invalid_labels(self._repo_cfgs, self._clients, INVALID_LABELS)
+            self._daily_state.sync_invalid_labels(
+                self._repo_cfgs, self._clients, INVALID_LABELS
+            )
             self._daily_state.save()
             self._daily_state.save_summary(self._config.runtime.valid_target_per_repo)
 
@@ -2805,7 +3201,9 @@ class AuditOrchestrator:
                 or first_repo_token_ref.strip()
             )
         if not external_token:
-            raise ConfigError("Unable to initialize external dedup client: no token available")
+            raise ConfigError(
+                "Unable to initialize external dedup client: no token available"
+            )
 
         self._external_checker = ExternalDedupChecker(
             GitHubClient(external_token),
@@ -2818,7 +3216,9 @@ class AuditOrchestrator:
             [repo.name for repo in self._repo_cfgs],
         )
 
-    def _process_candidates(self, candidates: Sequence[BugCandidate], source_path: Path) -> int:
+    def _process_candidates(
+        self, candidates: Sequence[BugCandidate], source_path: Path
+    ) -> int:
         assert self._config is not None
         assert self._daily_state is not None
         assert self._dedup_store is not None
@@ -2828,17 +3228,23 @@ class AuditOrchestrator:
         os.environ["PROOF_SOURCE_REPO_PATH"] = str(source_path)
 
         submitted = 0
+        hourly_count = 0
+        hourly_window_start = time.monotonic()
         ordered_candidates = sorted(
             candidates,
             key=candidate_submission_score,
             reverse=True,
         )
         for candidate in ordered_candidates:
-            if self._daily_state.all_targets_met(self._config.runtime.valid_target_per_repo):
+            if self._daily_state.all_targets_met(
+                self._config.runtime.valid_target_per_repo
+            ):
                 break
 
             fingerprint = compute_fingerprint(candidate)
-            quality_ok, quality_reason, quality_score = evaluate_submission_candidate(candidate)
+            quality_ok, quality_reason, quality_score = evaluate_submission_candidate(
+                candidate
+            )
             if not quality_ok:
                 reserved = self._dedup_store.try_reserve(
                     fingerprint,
@@ -2866,10 +3272,16 @@ class AuditOrchestrator:
                 continue
 
             try:
-                duplicate, duplicate_url = self._external_checker.is_duplicate(candidate, fingerprint)
+                duplicate, duplicate_url = self._external_checker.is_duplicate(
+                    candidate, fingerprint
+                )
             except Exception as exc:
-                print(f"[audit] skipped '{candidate.title}' due to external dedup error: {exc}")
-                self._dedup_store.mark_skipped(fingerprint, f"external_dedup_error:{exc}")
+                print(
+                    f"[audit] skipped '{candidate.title}' due to external dedup error: {exc}"
+                )
+                self._dedup_store.mark_skipped(
+                    fingerprint, f"external_dedup_error:{exc}"
+                )
                 continue
 
             if duplicate:
@@ -2884,13 +3296,21 @@ class AuditOrchestrator:
                 continue
 
             try:
-                artifacts = self._proof_manager.prepare(candidate, fingerprint, source_path)
+                artifacts = self._proof_manager.prepare(
+                    candidate, fingerprint, source_path
+                )
             except Exception as exc:
-                print(f"[audit] skipped '{candidate.title}' due to proof validation: {exc}")
-                self._dedup_store.mark_skipped(fingerprint, f"proof_validation_failed:{exc}")
+                print(
+                    f"[audit] skipped '{candidate.title}' due to proof validation: {exc}"
+                )
+                self._dedup_store.mark_skipped(
+                    fingerprint, f"proof_validation_failed:{exc}"
+                )
                 continue
 
-            repo_name = self._daily_state.choose_repo(self._config.runtime.valid_target_per_repo)
+            repo_name = self._daily_state.choose_repo(
+                self._config.runtime.valid_target_per_repo
+            )
             if not repo_name:
                 self._dedup_store.mark_skipped(fingerprint, "daily_target_reached")
                 break
@@ -2921,12 +3341,16 @@ class AuditOrchestrator:
                     labels=repo_cfg.labels,
                 )
             except Exception as exc:
-                self._dedup_store.mark_skipped(fingerprint, f"issue_submit_failed:{exc}")
+                self._dedup_store.mark_skipped(
+                    fingerprint, f"issue_submit_failed:{exc}"
+                )
                 continue
 
             issue_number = int(issue["number"])
             issue_url = str(issue["html_url"])
-            self._daily_state.record_submission(repo_name, issue_number, issue_url, fingerprint)
+            self._daily_state.record_submission(
+                repo_name, issue_number, issue_url, fingerprint
+            )
             self._dedup_store.mark_submitted(
                 fingerprint,
                 issue_repo=f"{repo_cfg.owner}/{repo_cfg.repo}",
@@ -2934,6 +3358,27 @@ class AuditOrchestrator:
                 issue_url=issue_url,
             )
             submitted += 1
+            hourly_count += 1
+
+            # Reset hourly window counter every 3600 seconds.
+            elapsed = time.monotonic() - hourly_window_start
+            if elapsed >= 3600:
+                hourly_count = 1
+                hourly_window_start = time.monotonic()
+
+            # Enforce hourly submission cap.
+            if hourly_count >= self._config.runtime.max_issues_per_hour:
+                logger.warning(
+                    "Hourly submission cap (%d) reached – pausing until next window",
+                    self._config.runtime.max_issues_per_hour,
+                )
+                wait = max(0, 3600 - elapsed) + 1
+                time.sleep(wait)
+                hourly_count = 0
+                hourly_window_start = time.monotonic()
+
+            # Throttle between submissions.
+            time.sleep(self._config.runtime.seconds_between_submissions)
 
         return submitted
 

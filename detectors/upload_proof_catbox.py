@@ -274,6 +274,14 @@ def upload_github_repo(path: Path, timeout: int) -> str:
 
 
 def upload_github_attachment(path: Path, timeout: int) -> str:
+    import warnings
+    warnings.warn(
+        "github_attachment backend uses browser-session cookies and spoofed "
+        "User-Agent headers to upload via internal GitHub endpoints. This "
+        "violates GitHub's Terms of Service and can trigger account flagging. "
+        "Switch to PROOF_UPLOAD_BACKEND=github_repo instead.",
+        stacklevel=2,
+    )
     cookie = _resolve_session_cookie()
     repo_id = _resolve_repo_id(path, timeout)
     content_type = _resolve_attachment_mime(path)
